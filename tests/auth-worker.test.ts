@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
-import { readFile, readdir } from 'node:fs/promises';
+import { applyTestMigrations } from './helpers/migrations';
 import { build } from 'esbuild';
 import { Miniflare } from 'miniflare';
 import { sha256 } from '../worker/protocol';
@@ -23,16 +23,7 @@ beforeAll(async () => {
     AGENT_TOKENS_JSON: JSON.stringify([{ host_id: 'native-host', name: 'Native host', token_hash: await sha256(token) }]),
   } });
   const db = await mf.getD1Database('DB');
-  for (const name of (await readdir(new URL('../migrations/', import.meta.url))).filter(name => name.endsWith('.sql')).sort()) {
-    const text = await readFile(new URL(`../migrations/${name}`, import.meta.url), 'utf8');
-    let current = ''; let trigger = false;
-    for (const line of text.split('\n')) {
-      if (line.trim().startsWith('--') || !line.trim()) continue;
-      if (line.trim().startsWith('CREATE TRIGGER')) trigger = true;
-      current += `${line}\n`;
-      if ((trigger && line.trim() === 'END;') || (!trigger && line.trim().endsWith(';'))) { await db.prepare(current).run(); current = ''; trigger = false; }
-    }
-  }
+  await applyTestMigrations(db as unknown as D1Database);
 }, 30_000);
 afterAll(async () => { await mf?.dispose(); });
 

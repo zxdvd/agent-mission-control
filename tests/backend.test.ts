@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
-import { readFile, readdir } from 'node:fs/promises';
+import { applyTestMigrations } from './helpers/migrations';
 import { Miniflare } from 'miniflare';
 import { app } from '../worker/index';
 import { inferAttention, ingest, IngestError } from '../worker/db';
@@ -27,16 +27,7 @@ async function request(path:string,init:RequestInit={}) {return app.request(`htt
 beforeAll(async()=>{
   mf=new Miniflare({modules:true,script:'export default { fetch() { return new Response("ok"); } }',compatibilityDate:'2026-08-01',d1Databases:['DB']});
   db=await mf.getD1Database('DB') as unknown as D1Database;
-  const migrations=await readdir(new URL('../migrations/',import.meta.url));
-  const migration=(await Promise.all(migrations.filter(name=>name.endsWith('.sql')).sort().map(name=>readFile(new URL(`../migrations/${name}`,import.meta.url),'utf8')))).join('\n');
-  const statements:string[]=[];let current='';let trigger=false;
-  for(const line of migration.split('\n')) {
-    if(line.trim().startsWith('--') || !line.trim()) continue;
-    if(line.trim().startsWith('CREATE TRIGGER')) trigger=true;
-    current+=line+'\n';
-    if((trigger && line.trim()==='END;') || (!trigger && line.trim().endsWith(';'))) {statements.push(current);current='';trigger=false;}
-  }
-  for(const statement of statements) await db.prepare(statement).run();
+  await applyTestMigrations(db);
   await db.batch([
     db.prepare('INSERT INTO hosts(id,name,created_at) VALUES (?,?,?)').bind('host-a','Host A',timestamp()),
     db.prepare('INSERT INTO hosts(id,name,created_at) VALUES (?,?,?)').bind('host-b','Host B',timestamp()),

@@ -80,3 +80,23 @@ npx --no-install wrangler deploy --config .wrangler.deploy.json
 - [Cloudflare Worker Secrets](https://developers.cloudflare.com/workers/configuration/secrets/)
 - [Cloudflare最小权限](https://developers.cloudflare.com/workers/authorization/)
 - [Cloudflare账号级Token](https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/)
+
+## D1 首次迁移报 `incomplete input` 时
+
+本项目的初始迁移包含两个完整触发器。Wrangler 本地执行先拆分 SQL，远端 migrations 则把整份 SQL 与迁移记录 INSERT 交给 D1 `/query`；本地成功不能证明远端解析成功。兼容修复仅将触发器保持为单行并给 CASE 表达式加括号，不改变表结构或事件状态逻辑；Git 强制 SQL 使用 LF。
+
+重试前，在目标 D1 Console **分两次**执行只读检查：
+
+```sql
+SELECT name FROM d1_migrations ORDER BY id;
+```
+
+```sql
+SELECT type, name FROM sqlite_master ORDER BY type, name;
+```
+
+若 ledger 为空且只有 Cloudflare/SQLite/迁移记录表，没有 hosts/tasks/events 等项目对象，可使用修复后的 main 再显式执行待应用迁移。若已经有项目表、触发器或已应用记录，先核查实际状态，不删库、不清空 ledger，不把“没有显示结果”当成回滚证明。失败的旧 Actions run 绑定旧提交；应在确认后从修复后的 main 发起新的手动发布，不重跑旧提交。
+
+这些查询只检查结构与迁移记录，不读取任务内容。仓库回归验证了真实本地解析/执行兼容性；最终远端是否接受仍以你批准的新部署结果为准。
+
+参考：[Cloudflare CASE/END 解析问题](https://github.com/cloudflare/workers-sdk/issues/4727)、[单行 trigger 兼容办法](https://github.com/cloudflare/workers-sdk/issues/4998)、[当前远端多行解析报告](https://github.com/cloudflare/workers-sdk/issues/15690)。

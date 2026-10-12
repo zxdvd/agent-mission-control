@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from 'vitest';
-import { readFile, readdir } from 'node:fs/promises';
+import { applyTestMigrations } from './helpers/migrations';
 import { pbkdf2Sync } from 'node:crypto';
 import { Miniflare } from 'miniflare';
 import { app } from '../worker/index';
@@ -36,19 +36,7 @@ beforeAll(async () => {
   verifier = await passwordHash(password);
   mf = new Miniflare({ modules: true, script: `export default { async fetch(request) { const {password,salt}=await request.json();const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveBits']);const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt:Uint8Array.from(atob(salt.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0)),iterations:100000},key,256);return new Response(btoa(String.fromCharCode(...new Uint8Array(bits))).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,''));} }`, compatibilityDate: '2026-08-01', d1Databases: ['AUTH_DB'] });
   db = await mf.getD1Database('AUTH_DB') as unknown as D1Database;
-  const files = (await readdir(new URL('../migrations/', import.meta.url))).filter(name => name.endsWith('.sql')).sort();
-  for (const file of files) {
-    const migration = await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8');
-    let current = ''; let trigger = false;
-    for (const line of migration.split('\n')) {
-      if (line.trim().startsWith('--') || !line.trim()) continue;
-      if (line.trim().startsWith('CREATE TRIGGER')) trigger = true;
-      current += line + '\n';
-      if ((trigger && line.trim() === 'END;') || (!trigger && line.trim().endsWith(';'))) {
-        await db.prepare(current).run(); current = ''; trigger = false;
-      }
-    }
-  }
+  await applyTestMigrations(db);
 }, 30_000);
 beforeEach(async () => {
   await db.batch([db.prepare('DELETE FROM dashboard_sessions'), db.prepare('DELETE FROM login_attempts')]);
