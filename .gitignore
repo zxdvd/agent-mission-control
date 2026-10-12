@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+.env.*
+!.env.example
+coverage/
+test-results/
+playwright-report/
+*.log
+
+CONTRACT.md
+
+.dev.vars.*
+.wrangler.deploy.json

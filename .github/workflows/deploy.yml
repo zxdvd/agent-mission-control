@@ -1,0 +1,88 @@
+name: Deploy production (manual)
+run-name: Deploy ${{ github.sha }} by @${{ github.actor }}
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type DEPLOY after reviewing this main commit and the Access policy'
+        required: true
+        type: string
+      apply_migrations:
+        description: 'Apply pending remote D1 migrations before deployment (review SQL first)'
+        required: true
+        default: false
+        type: boolean
+      access_configured:
+        description: 'I configured Access for this dashboard; only exact /api/events bypasses browser login'
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.repository == 'zxdvd/agent-mission-control' && github.ref == 'refs/heads/main' && inputs.confirmation == 'DEPLOY' && inputs.access_configured
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+  deploy:
+    needs: validate
+    if: github.repository == 'zxdvd/agent-mission-control' && github.ref == 'refs/heads/main' && inputs.confirmation == 'DEPLOY' && inputs.access_configured
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Validate production variables and generate fail-closed config
+        run: node scripts/prepare-deploy.mjs
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
+          ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+          ADMIN_EMAILS: ${{ vars.ADMIN_EMAILS }}
+      - name: Check deployment credential is present (never print it)
+        shell: bash
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Missing production CLOUDFLARE_API_TOKEN secret'; exit 1; }
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Apply approved remote migrations
+        if: inputs.apply_migrations
+        run: npx --no-install wrangler d1 migrations apply mission-control --remote --config .wrangler.deploy.json
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Deploy exact checked main commit
+        run: npx --no-install wrangler deploy --config .wrangler.deploy.json
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Remove temporary configuration
+        if: always()
+        run: rm -f .wrangler.deploy.json
