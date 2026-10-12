@@ -1,14 +1,15 @@
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
-  ACCESS_TEAM_DOMAIN?: string;
-  ACCESS_AUD?: string;
-  ADMIN_EMAILS?: string;
+  DASHBOARD_PASSWORD_HASH?: string;
+  SESSION_SECRET?: string;
+  SESSION_VERSION?: string;
+  AGENT_TOKENS_JSON?: string;
   LOCAL_DEV?: string;
   OFFLINE_SECONDS?: string;
   STALE_SECONDS?: string;
 }
-export type Identity = { role: 'admin' | 'reader'; email: string; local: boolean };
+export type Identity = { role: 'admin'; email?: string; local: boolean; csrf_token: string; sessionHash?: string };
 export type AppEnv = { Bindings: Env; Variables: { identity: Identity } };
 export const EVENT_TYPES = [
   'session_started', 'turn_started', 'turn_finished', 'approval_required',

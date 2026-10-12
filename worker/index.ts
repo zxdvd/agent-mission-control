@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
-import { authenticate, sameOriginMutation } from './auth';
+import { authenticate, AuthConfigError, AuthError, clearSessionCookie, createSession, isLoopbackRequest, limitLogin, loginHtml, LoginRateLimitError, requireAuthConfig, revokeSession, sameOriginMutation, validCsrf, verifyPassword } from './auth';
 import { ATTENTION_SELECT, TASK_SELECT, getHosts, inferAttention, ingest, IngestError, normalizeAttention, normalizeTask } from './db';
-import { ProtocolError, safeText, sha256, validateEvent, validateId } from './protocol';
+import { ProtocolError, safeText, validateEvent, validateId } from './protocol';
 import type { AppEnv, Env } from './types';
 
 export const app = new Hono<AppEnv>();
@@ -19,28 +19,92 @@ async function jsonBody(request: Request): Promise<unknown> {
   const bytes=new Uint8Array(size); let offset=0; for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
   try { return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)); } catch { throw new ProtocolError('Invalid JSON'); }
 }
+function securityHeaders(response: Response, url: string): void {
+  response.headers.set('Cache-Control','no-store');
+  response.headers.set('X-Content-Type-Options','nosniff');
+  response.headers.set('Referrer-Policy','no-referrer');
+  response.headers.set('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+  if (new URL(url).protocol === 'https:') response.headers.set('Strict-Transport-Security','max-age=31536000');
+}
+// Apply these after every route, including redirects, errors, and ASSETS.
+// Asset binding headers must never weaken the authenticated response policy.
+app.use('*',async(c,next)=>{
+  await next();
+  securityHeaders(c.res,c.req.url);
+});
 app.use('*', async (c,next) => {
-  c.header('Cache-Control','no-store');
-  c.header('X-Content-Type-Options','nosniff');
-  c.header('Referrer-Policy','no-referrer');
-  c.header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+  if (c.req.path === '/login' && c.req.method === 'GET') return next();
+  if (c.req.path === '/api/auth/login' && c.req.method === 'POST') return next();
+  const local = isLoopbackRequest(c.req.raw,c.env.LOCAL_DEV);
+  // Production ingestion is also closed until all authentication settings exist.
+  if (!local) {
+    requireAuthConfig(c.env);
+    if (new URL(c.req.url).protocol !== 'https:') return c.json({error:'HTTPS required'},403);
+  }
   if (c.req.path === '/api/events' && c.req.method === 'POST') return next();
   try { c.set('identity',await authenticate(c.req.raw,c.env)); }
-  catch { return c.json({error:'Authentication required'},401); }
+  catch (error) {
+    if (!(error instanceof AuthError)) throw error;
+    if (c.req.method === 'GET' && !c.req.path.startsWith('/api/')) return c.redirect('/login',302);
+    return c.json({error:'Authentication required'},401);
+  }
   if (!['GET','HEAD','OPTIONS'].includes(c.req.method)) {
-    if (c.get('identity').role !== 'admin') return c.json({error:'Administrator permission required'},403);
-    if (!sameOriginMutation(c.req.raw)) return c.json({error:'Cross-origin mutation denied'},403);
+    // CLI-only convenience stays confined to the explicit loopback dev bypass.
+    const localCli = local && !c.req.header('Origin') && !c.req.header('Sec-Fetch-Site');
+    if (!localCli && !validCsrf(c.req.raw,c.get('identity'))) return c.json({error:'Same-origin CSRF token required'},403);
   }
   await next();
+});
+app.get('/login', c => {
+  if (isLoopbackRequest(c.req.raw,c.env.LOCAL_DEV)) return c.redirect('/',302);
+  if (new URL(c.req.url).protocol !== 'https:') return c.text('HTTPS required',403);
+  return c.html(loginHtml());
+});
+app.post('/api/auth/login', async c => {
+  requireAuthConfig(c.env);
+  if (new URL(c.req.url).protocol !== 'https:') return c.json({error:'HTTPS required'},403);
+  if (!sameOriginMutation(c.req.raw)) return c.json({error:'Same-origin login required'},403);
+  await limitLogin(c.req.raw,c.env);
+  const type = c.req.header('Content-Type') ?? '';
+  const form = /^application\/x-www-form-urlencoded(?:\s*;|$)/i.test(type);
+  let body: unknown;
+  if (form) {
+    const reader = c.req.raw.body?.getReader();
+    if (!reader) throw new ProtocolError('Missing login form');
+    let bytes = new Uint8Array(0);
+    try {
+      while (true) {
+        const {done,value} = await reader.read(); if (done) break;
+        if (bytes.length + value.length > 4096) {await reader.cancel();throw new ProtocolError('Login request too large');}
+        const combined = new Uint8Array(bytes.length + value.length); combined.set(bytes); combined.set(value,bytes.length); bytes = combined;
+      }
+    } finally { reader.releaseLock(); }
+    const fields = new URLSearchParams(new TextDecoder().decode(bytes));
+    if ([...fields.keys()].length !== 1 || !fields.has('password')) throw new ProtocolError('Expected password');
+    body = {password:fields.get('password')};
+  } else body = await jsonBody(c.req.raw);
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof (body as Record<string,unknown>).password !== 'string') throw new ProtocolError('Expected password');
+  const valid = await verifyPassword((body as {password:string}).password,c.env.DASHBOARD_PASSWORD_HASH!);
+  if (!valid) return form ? c.html(loginHtml('Incorrect password.'),401) : c.json({error:'Invalid password'},401);
+  c.header('Set-Cookie',await createSession(c.env));
+  return form ? c.redirect('/',302) : c.json({ok:true});
+});
+app.post('/api/auth/logout',async c => {
+  await revokeSession(c.get('identity'),c.env);
+  c.header('Set-Cookie',clearSessionCookie());
+  return c.json({ok:true});
 });
 app.post('/api/events',async c => {
   const authorization = c.req.header('Authorization') ?? '';
   if (!/^Bearer [A-Za-z0-9_.-]{32,256}$/.test(authorization)) return c.json({error:'Host bearer credential required'},401);
   const event = validateEvent(await jsonBody(c.req.raw));
-  const accepted = await ingest(c.env.DB,event,authorization.slice(7));
+  const accepted = await ingest(c.env,event,authorization.slice(7));
   return c.json({accepted,duplicate:!accepted,event_id:event.event_id},accepted ? 201 : 200);
 });
-app.get('/api/me', c => c.json(c.get('identity')));
+app.get('/api/me', c => {
+  const {role,email,local,csrf_token}=c.get('identity');
+  return c.json({role,...(email ? {email} : {}),local,csrf_token});
+});
 app.get('/api/hosts',async c => c.json({hosts:await getHosts(c.env)}));
 app.get('/api/tasks',async c => {
   const tasks = await c.env.DB.prepare(`${TASK_SELECT} ${c.req.query('archived')==='all'?'':'WHERE t.archived=0'} ORDER BY t.last_activity_at DESC LIMIT 500`).all();
@@ -122,24 +186,6 @@ app.patch('/api/attention/:id',async c => {
   const attention=await c.env.DB.prepare(`${ATTENTION_SELECT} WHERE id=?`).bind(c.req.param('id')).first();
   return c.json({attention:normalizeAttention(attention!)});
 });
-app.post('/api/admin/hosts',async c => {
-  const body=await jsonBody(c.req.raw) as Record<string,unknown>;
-  if(!body || typeof body!=='object' || Array.isArray(body) || Object.keys(body).some(k=>!['host_id','name'].includes(k))) throw new ProtocolError('Expected host_id and name');
-  validateId(body.host_id,'host_id');const name=safeText(body.name,'name');if(!name.trim()) throw new ProtocolError('Name must not be empty');
-  const token=`amc_${[...crypto.getRandomValues(new Uint8Array(32))].map(v=>v.toString(16).padStart(2,'0')).join('')}`;
-  const hash=await sha256(token);const now=new Date().toISOString();
-  try {await c.env.DB.batch([
-    c.env.DB.prepare('INSERT INTO hosts (id,name,created_at) VALUES (?,?,?)').bind(body.host_id,name,now),
-    c.env.DB.prepare('INSERT INTO host_credentials (host_id,token_hash,created_at) VALUES (?,?,?)').bind(body.host_id,hash,now),
-  ]);} catch(error) {if(error instanceof Error && /UNIQUE constraint/.test(error.message)) return c.json({error:'Host already registered; choose a new host ID'},409);throw error;}
-  return c.json({host:{id:body.host_id,name,last_heartbeat_at:null,online:false,task_count:0,session_count:0},token},201);
-});
-app.delete('/api/admin/hosts/:id/credential',async c => {
-  const id=c.req.param('id');validateId(id,'host_id');
-  const result=await c.env.DB.prepare('UPDATE host_credentials SET revoked_at=coalesce(revoked_at,?) WHERE host_id=?').bind(new Date().toISOString(),id).run();
-  if(!result.meta.changes) return c.json({error:'Host not found'},404);
-  return c.json({revoked:true,host_id:id});
-});
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 app.get('*',async c => {
   if(!c.env.ASSETS) return c.text('Frontend assets have not been built.',503);
@@ -147,6 +193,8 @@ app.get('*',async c => {
   return c.newResponse(response.body,response);
 });
 app.onError((error,c) => {
+  if(error instanceof AuthConfigError) return c.json({error:'Authentication is not configured. Contact the operator.'},503);
+  if(error instanceof LoginRateLimitError) {c.header('Retry-After',String(error.retryAfter));return c.json({error:error.message},429);}
   if(error instanceof ProtocolError) return c.json({error:error.message},400);
   if(error instanceof IngestError) {if(error.status===429)c.header('Retry-After','60');return c.json({error:error.message},error.status);}
   // Never log request bodies, credentials, payloads, or database exceptions.

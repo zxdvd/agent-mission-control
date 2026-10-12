@@ -20,7 +20,7 @@ npm run build
 npm run dev:worker
 ```
 
-Open http://127.0.0.1:8787. Local development authorization is deliberately restricted to loopback and must never be exposed through a tunnel or deployed. `.dev.vars` is ignored by Git and not shipped in the source archive. For hot reload, run `npm run dev` in a second terminal; Vite forwards `/api` to port 8787.
+Open http://127.0.0.1:8787. Local development authorization is deliberately restricted to loopback and must never be exposed through a tunnel or deployed. `.dev.vars` is ignored by Git and not shipped in the source archive. Use the Worker URL above for authentication testing; the Vite development server is a UI-only convenience, not the production authentication boundary.
 
 ```sh
 npm run typecheck
@@ -44,48 +44,35 @@ The browser polls every seven seconds. SQLite/D1 is the source of truth; demo sc
 
 ## Security model
 
-The entire Worker, including static assets, authenticates Cloudflare Access JWTs server-side. Configure issuer/audience and the admin email allowlist. Dashboard read access does not confer host token administration. Agent ingestion uses a separate, per-host bearer credential; only its SHA-256 digest is stored. Credentials are revocable, cannot read the dashboard, and cannot impersonate another host. Event validation, bounded requests, rate limiting, event-id deduplication, identity checks and chronological projection protect the ingestion boundary. Browser state changes use same-origin protections. Do not log Authorization headers or host credentials.
+The dashboard uses an independent shared administrator password; no Cloudflare Access setup or login is required. A PBKDF2 verifier and independent session signing key live in Worker Secrets. Short-lived secure HttpOnly cookies, server-side session revocation, CSRF checks, and login rate limits protect browser operations. Login HTML is public; monitoring data and dashboard assets require authentication. Missing production secrets fail closed. All people sharing the password have the same administrator privileges; there are no separate readers, per-user audit identities or MFA in this personal MVP.
 
-Production is fail-closed when Access settings are absent. Do not deploy with `LOCAL_DEV=true`. Access must cover the dashboard and admin/read APIs. Agent ingestion cannot perform browser login, so deploy an explicit Access bypass only for the exact `/api/events` path; that endpoint still requires the Worker’s host credential. Do not bypass `/api/*` broadly. Alternatively use a separate ingestion hostname routed to the same Worker with equivalent exact-path restrictions.
+Agent ingestion has a separate fixed per-host token boundary: `AGENT_TOKENS_JSON` is a Worker Secret containing host IDs, names, and SHA-256 token digests. Each request checks the current configured host/token pair. Host tokens cannot sign in or read dashboard data, and browser sessions cannot ingest events. First valid ingestion creates a monitoring host record. No production credentials are minted by the application. Event validation, bounded requests, rate limiting, deduplication and identity guards remain enforced.
 
-## Cloudflare deployment
+Never deploy `LOCAL_DEV=true`, expose local development through a tunnel, log credentials, or commit secrets. Password/session-key changes invalidate old sessions; logout revokes the current session. Removing a host from configured tokens revokes ingestion after configuration propagation; replacing its digest rotates its token without deleting history.
 
-For the recommended private GitHub repository + manual Actions path, follow [中文 GitHub Actions 部署步骤](DEPLOY.zh-CN.md). CI does not deploy; production uses explicit workflow_dispatch, main-only guards, a protected production environment, and an opt-in migration step.
+## Cloudflare deployment and host configuration
 
-Deployment was not performed as part of this source delivery unless explicitly stated in the verification report. You need your own Cloudflare account, Workers/D1 permission and a configured Access application. Creating credentials, expanding Access permissions or accepting costs requires your approval.
+Follow [中文 GitHub Actions 部署步骤](DEPLOY.zh-CN.md). The public repository supports protected environments on GitHub Free. CI does not deploy; production uses manual workflow_dispatch, main-only guards, a production environment, and an opt-in migration step. Account ID and D1 ID are GitHub environment Variables. `CLOUDFLARE_API_TOKEN` is the environment deployment Secret; `DASHBOARD_PASSWORD_HASH`, `SESSION_SECRET`, and `AGENT_TOKENS_JSON` are separately configured Cloudflare Worker Secrets. They never enter frontend build inputs.
 
-1. Authenticate your own deployment CLI: `npx wrangler login`.
-2. Create D1: `npx wrangler d1 create mission-control`. Copy the returned database ID into `wrangler.jsonc`.
-3. In Cloudflare Zero Trust, configure a self-hosted Access application for the dashboard hostname, an explicit allow policy for intended users, and the narrowly scoped ingestion exception described above. Do not publish the app before protection is ready.
-4. Set `ACCESS_TEAM_DOMAIN` to the team’s `*.cloudflareaccess.com` domain, `ACCESS_AUD` to the application audience, `ADMIN_EMAILS` to the comma-separated trusted operators; retain `LOCAL_DEV=false` in `wrangler.jsonc`.
-5. Apply production schema: `npx wrangler d1 migrations apply mission-control --remote`.
-6. Build and publish: `npm run build && npx wrangler deploy`.
-7. Verify unauthenticated dashboard/read/admin requests are rejected; verify valid Access identity works, an ordinary reader cannot administer hosts, and a host token can only ingest for its own host.
-8. Register each host as an authenticated admin, copy its one-time returned token into the host’s private adapter config, and test revocation. Never put tokens in Git, shell history, screenshots or chat.
+Use `node scripts/password-hash.mjs` to prepare a verifier from a strong unique password and `node scripts/token-hash.mjs < /private/path/token` to hash an independently generated high-entropy host token. These utilities do not install or configure credentials for you. Store each plaintext host token only in its corresponding private adapter file. See the deployment guide for exact configuration, rotation and acceptance steps. The old Access configuration and host-registration/revocation API are no longer used.
 
-Cloudflare may charge based on plan and usage. Review the current account limits before deployment. Cron runs every two minutes; dashboard connectivity freshness is also derived during reads. Hooks alone are intermittent: without an explicitly configured OS heartbeat scheduler or a foreground wrapper, silence only means last-seen/unknown, not a confirmed machine outage.
+Cloudflare may charge based on plan and usage. Review account limits before deployment. Cron runs every two minutes; connectivity freshness is also derived during reads. Hooks alone are intermittent: without an explicitly configured OS heartbeat scheduler or foreground wrapper, silence only means last-seen/unknown, not confirmed machine outage.
 
-## Register or revoke a host (administrator API)
+## Synthetic local integration data
 
-The Hosts page is observational; this MVP exposes registration/revocation through the authenticated API. Sign in to your protected dashboard as an email listed in `ADMIN_EMAILS`, then run the following in that dashboard's browser developer console. Only do this on your own verified dashboard origin:
+Ordinary local startup above displays an empty dashboard. For isolated synthetic ingestion tests, stop the ordinary Worker and use:
 
-```js
-await fetch('/api/admin/hosts', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ host_id: 'my-mac', name: 'My Mac' })
-}).then(response => response.json())
+```sh
+node scripts/local-fixtures.mjs
+npm run db:migrate -- --persist-to .wrangler/test-state
+npm run dev:worker -- --env-file .dev.vars.test --persist-to .wrangler/test-state
+# In another terminal:
+node --env-file=.env.test-hosts scripts/simulate.mjs
+node --env-file=.env.test-hosts scripts/integration.mjs
+node --env-file=.env.test-hosts tests/adapter-live.mjs
 ```
 
-The returned `token` is shown once. Transfer it directly into the private local adapter setup; never send it in chat or commit it. An existing host ID is rejected rather than silently rotating credentials. To revoke that host immediately:
-
-```js
-await fetch('/api/admin/hosts/my-mac/credential', {
-  method: 'DELETE'
-}).then(response => response.json())
-```
-
-This preserves monitoring history. Re-register with a new host ID for a replacement credential. Ordinary readers cannot create/revoke credentials or change tasks/inbox state.
+The fixture generator refuses to overwrite existing files. Its ignored files contain only explicitly synthetic test tokens, never usable production credentials. The `--env-file` option prevents loading ordinary `.dev.vars`; test data uses a separate local database directory. Backend authentication tests exercise password mode independently of this loopback-only integration identity.
 
 ## Adapter installation and limitations
 
@@ -109,4 +96,4 @@ Adapters are monitoring integrations, not approval agents. See [VERIFICATION.md]
 
 ## Browser verification script
 
-A Playwright script is included but was not executed successfully in the restricted cloud runtime. On a supported development machine, start a fresh local database, run `npm run simulate`, install the official browser with `npx playwright install chromium`, and run `npm run test:browser`. Alternatively set `CHROMIUM_PATH` to an existing supported browser executable. The script checks desktop/mobile interactions and writes synthetic-data screenshots beneath the OS temporary directory. DOM tests in `npm test` exercise application logic with a synthetic API fixture and are not visual-browser acceptance.
+A Playwright script is included but was not executed successfully in the restricted cloud runtime. On a supported development machine, start a fresh local database, run the synthetic simulation above, install the official browser with `npx playwright install chromium`, and run `npm run test:browser`. Alternatively set `CHROMIUM_PATH` to an existing supported browser executable. The script checks desktop/mobile interactions and writes synthetic-data screenshots beneath the OS temporary directory. DOM tests in `npm test` exercise application logic with a synthetic API fixture and are not visual-browser acceptance.

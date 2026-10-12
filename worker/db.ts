@@ -1,4 +1,5 @@
 import type { AgentEvent, Env } from './types';
+import { configuredHosts } from './auth';
 import { canonicalEvent, eventClock, sha256 } from './protocol';
 export class IngestError extends Error {
   constructor(message: string, readonly status: 401 | 403 | 409 | 429) { super(message); }
@@ -7,29 +8,33 @@ export function threshold(value: string | undefined, fallback: number): number {
   const n = Number(value);
   return Number.isFinite(n) && n >= 30 && n <= 86_400 ? n : fallback;
 }
-export async function ingest(db: D1Database, event: AgentEvent, token: string, now = new Date()): Promise<boolean> {
+export async function ingest(env: Env, event: AgentEvent, token: string, now = new Date()): Promise<boolean> {
+  const db = env.DB;
   const hash = await sha256(token);
-  const credential = await db.prepare('SELECT host_id FROM host_credentials WHERE token_hash = ? AND revoked_at IS NULL').bind(hash).first<{host_id: string}>();
+  // Re-read the current Worker Secret on every request, including retries.
+  // No database row can retain access after a token is removed or rotated.
+  const credential = configuredHosts(env).find(host => host.token_hash === hash);
   if (!credential) throw new IngestError('Invalid host credential', 401);
   if (credential.host_id !== event.host_id) throw new IngestError('Credential does not belong to this host', 403);
   const fingerprint = await sha256(canonicalEvent(event));
   let inserted: D1Result;
   try {
-    inserted = await db.prepare(`INSERT INTO events
-      (event_id,timestamp,received_at,host_id,agent_type,session_id,task_id,run_id,event_type,payload,fingerprint,clock)
-      SELECT ?,?,?,?,?,?,?,?,?,?,?,?
-      WHERE EXISTS (SELECT 1 FROM host_credentials WHERE host_id = ? AND token_hash = ? AND revoked_at IS NULL)
-      ON CONFLICT(event_id) DO NOTHING`).bind(event.event_id,event.timestamp,now.toISOString(),event.host_id,
-        event.agent_type,event.session_id,event.task_id ?? null,event.run_id ?? null,event.event_type,
-        JSON.stringify(event.payload),fingerprint,eventClock(event),event.host_id,hash).run();
+    const results = await db.batch([
+      db.prepare(`INSERT INTO hosts (id,name,created_at) VALUES (?,?,?)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name`).bind(credential.host_id,credential.name,now.toISOString()),
+      db.prepare(`INSERT INTO events
+        (event_id,timestamp,received_at,host_id,agent_type,session_id,task_id,run_id,event_type,payload,fingerprint,clock)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING`).bind(event.event_id,event.timestamp,now.toISOString(),event.host_id,
+          event.agent_type,event.session_id,event.task_id ?? null,event.run_id ?? null,event.event_type,
+          JSON.stringify(event.payload),fingerprint,eventClock(event)),
+    ]);
+    inserted = results[1];
   } catch (error) {
     if (error instanceof Error && error.message.includes('rate_limit')) throw new IngestError('Host event rate limit exceeded; retry after 60 seconds', 429);
     if (error instanceof Error && error.message.includes('identity_conflict')) throw new IngestError('An identifier is already bound to another host, agent, task, or session', 409);
     throw error;
   }
   if (inserted.meta.changes > 0) return true;
-  const stillValid = await db.prepare('SELECT 1 FROM host_credentials WHERE host_id = ? AND token_hash = ? AND revoked_at IS NULL').bind(event.host_id,hash).first();
-  if (!stillValid) throw new IngestError('Host credential was revoked', 401);
   const existing = await db.prepare('SELECT host_id,fingerprint FROM events WHERE event_id = ?').bind(event.event_id).first<{host_id: string; fingerprint: string}>();
   if (!existing || existing.host_id !== event.host_id || existing.fingerprint !== fingerprint) throw new IngestError('event_id was already used for different data', 409);
   return false;

@@ -4,6 +4,6 @@
  "assets":{"directory":"./dist","binding":"ASSETS","not_found_handling":"single-page-application","run_worker_first":true},
  "d1_databases":[{"binding":"DB","database_name":"mission-control","database_id":"00000000-0000-0000-0000-000000000000","migrations_dir":"migrations"}],
  "triggers":{"crons":["*/2 * * * *"]},
- "vars":{"LOCAL_DEV":"false","ACCESS_TEAM_DOMAIN":"","ACCESS_AUD":"","ADMIN_EMAILS":"","STALE_SECONDS":"300","OFFLINE_SECONDS":"180"},
+ "vars":{"LOCAL_DEV":"false","STALE_SECONDS":"300","OFFLINE_SECONDS":"180"},
  "observability":{"enabled":false}
 }

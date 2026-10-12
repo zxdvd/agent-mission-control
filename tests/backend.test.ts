@@ -1,12 +1,9 @@
-import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
-import * as jose from 'jose';
-vi.mock('jose', async importOriginal => { const original=await importOriginal<typeof import('jose')>(); return {...original,createRemoteJWKSet:vi.fn(original.createRemoteJWKSet)}; });
-import { readFile } from 'node:fs/promises';
+import { beforeAll, afterAll, describe, expect, it } from 'vitest';
+import { readFile, readdir } from 'node:fs/promises';
 import { Miniflare } from 'miniflare';
-import { generateKeyPair, SignJWT, exportJWK, createLocalJWKSet } from 'jose';
 import { app } from '../worker/index';
 import { inferAttention, ingest, IngestError } from '../worker/db';
-import { isLoopbackRequest, verifyAccessToken } from '../worker/auth';
+import { isLoopbackRequest } from '../worker/auth';
 import { canonicalEvent, sha256, validateEvent } from '../worker/protocol';
 import type { AgentEvent, Env } from '../worker/types';
 
@@ -30,7 +27,8 @@ async function request(path:string,init:RequestInit={}) {return app.request(`htt
 beforeAll(async()=>{
   mf=new Miniflare({modules:true,script:'export default { fetch() { return new Response("ok"); } }',compatibilityDate:'2026-08-01',d1Databases:['DB']});
   db=await mf.getD1Database('DB') as unknown as D1Database;
-  const migration=await readFile(new URL('../migrations/0001_initial.sql',import.meta.url),'utf8');
+  const migrations=await readdir(new URL('../migrations/',import.meta.url));
+  const migration=(await Promise.all(migrations.filter(name=>name.endsWith('.sql')).sort().map(name=>readFile(new URL(`../migrations/${name}`,import.meta.url),'utf8')))).join('\n');
   const statements:string[]=[];let current='';let trigger=false;
   for(const line of migration.split('\n')) {
     if(line.trim().startsWith('--') || !line.trim()) continue;
@@ -42,10 +40,8 @@ beforeAll(async()=>{
   await db.batch([
     db.prepare('INSERT INTO hosts(id,name,created_at) VALUES (?,?,?)').bind('host-a','Host A',timestamp()),
     db.prepare('INSERT INTO hosts(id,name,created_at) VALUES (?,?,?)').bind('host-b','Host B',timestamp()),
-    db.prepare('INSERT INTO host_credentials(host_id,token_hash,created_at) VALUES (?,?,?)').bind('host-a',await sha256(tokenA),timestamp()),
-    db.prepare('INSERT INTO host_credentials(host_id,token_hash,created_at) VALUES (?,?,?)').bind('host-b',await sha256(tokenB),timestamp()),
   ]);
-  env={DB:db,LOCAL_DEV:'true',ASSETS:{fetch:async()=>new Response('private app')} as unknown as Fetcher};
+  env={DB:db,LOCAL_DEV:'true',AGENT_TOKENS_JSON:JSON.stringify([{host_id:'host-a',name:'Host A',token_hash:await sha256(tokenA)},{host_id:'host-b',name:'Host B',token_hash:await sha256(tokenB)}]),ASSETS:{fetch:async()=>new Response('private app')} as unknown as Fetcher};
 });
 afterAll(async()=>{await mf?.dispose();});
 
@@ -215,64 +211,48 @@ describe('atomic D1 projections and identity isolation',()=>{
     expect((await request('/api/tasks/task-a/events?cursor=garbage')).status).toBe(400);
   });
 });
-describe('authentication and operator endpoints',()=>{
-  it('authenticates both API and static assets; local bypass is loopback only',async()=>{
-    const production={...env,LOCAL_DEV:'false'};
-    expect((await app.request('https://console.example/',{},production)).status).toBe(401);
-    expect((await app.request('https://console.example/api/overview',{},production)).status).toBe(401);
-    expect((await app.request('http://public.example/',{},env)).status).toBe(401);
+describe('local development and configured host credentials',()=>{
+  it('allows only explicit loopback development bypass',async()=>{
+    expect((await app.request('https://console.example/',{},env)).status).toBe(503);
+    expect((await app.request('http://public.example/',{},env)).status).toBe(503);
     expect(isLoopbackRequest(new Request('http://localhost/',{headers:{'CF-Connecting-IP':'1.2.3.4'}}),'true')).toBe(false);
     expect(isLoopbackRequest(new Request('http://localhost/',{headers:{Host:'public.example'}}),'true')).toBe(false);
-    expect((await request('/')).status).toBe(200);
-    const privateAsset=await request('/');expect(privateAsset.headers.get('cache-control')).toBe('no-store');
-  });
-  it('validates JWT signature, issuer, audience and expiration',async()=>{
-    const {publicKey,privateKey}=await generateKeyPair('RS256');
-    const jwk=await exportJWK(publicKey);const key=createLocalJWKSet({keys:[{...jwk,kid:'test',alg:'RS256'}]});
-    const settings={...env,ACCESS_TEAM_DOMAIN:'team.cloudflareaccess.com',ACCESS_AUD:'audience'};
-    const sign=(issuer='https://team.cloudflareaccess.com',audience='audience',expires='1h')=>new SignJWT({email:'reader@example.com'}).setProtectedHeader({alg:'RS256',kid:'test'}).setSubject('user').setIssuer(issuer).setAudience(audience).setIssuedAt().setExpirationTime(expires).sign(privateKey);
-    await expect(verifyAccessToken(await sign(),settings,key)).resolves.toMatchObject({email:'reader@example.com'});
-    await expect(verifyAccessToken(await sign('https://other.cloudflareaccess.com'),settings,key)).rejects.toThrow();
-    await expect(verifyAccessToken(await sign(undefined,'other'),settings,key)).rejects.toThrow();
-    await expect(verifyAccessToken(await sign(undefined,undefined,'-1h'),settings,key)).rejects.toThrow();
-  });
-  it('separates verified reader/admin access from host ingest credentials',async()=>{
-    const {publicKey,privateKey}=await generateKeyPair('RS256');
-    const jwk=await exportJWK(publicKey);const key=createLocalJWKSet({keys:[{...jwk,kid:'roles',alg:'RS256'}]});
-    const spy=vi.mocked(jose.createRemoteJWKSet).mockReturnValue(key as ReturnType<typeof jose.createRemoteJWKSet>);
-    const production={...env,LOCAL_DEV:'false',ACCESS_TEAM_DOMAIN:'roles.cloudflareaccess.com',ACCESS_AUD:'roles-aud',ADMIN_EMAILS:'admin@example.com'};
-    const token=async(email:string)=>new SignJWT({email}).setProtectedHeader({alg:'RS256',kid:'roles'}).setSubject(email).setIssuer('https://roles.cloudflareaccess.com').setAudience('roles-aud').setIssuedAt().setExpirationTime('1h').sign(privateKey);
-    const reader=await token('reader@example.com');const admin=await token('admin@example.com');
-    const send=(path:string,assertion:string,init:RequestInit={})=>app.request(`https://console.example${path}`,{...init,headers:{'Cf-Access-Jwt-Assertion':assertion,'Content-Type':'application/json',Origin:'https://console.example'}},production);
-    try {
-      expect(await (await send('/api/me',reader)).json()).toMatchObject({role:'reader',local:false});
-      expect((await send('/api/tasks/task-a',reader,{method:'PATCH',body:'{"archived":true}'})).status).toBe(403);
-      expect((await send('/api/admin/hosts',reader,{method:'POST',body:'{"host_id":"deny","name":"Denied"}'})).status).toBe(403);
-      expect((await send('/api/tasks/task-a',admin,{method:'PATCH',body:'{"archived":false}'})).status).toBe(200);
-      expect((await send('/api/events',admin,{method:'POST',body:JSON.stringify(event())})).status).toBe(401);
-    } finally {spy.mockRestore();}
-  });
-  it('does not let host tokens read the console or spoof Access identity headers',async()=>{
-    const production={...env,LOCAL_DEV:'false'};
-    expect((await app.request('https://console.example/api/me',{headers:{Authorization:`Bearer ${tokenA}`,'Cf-Access-Authenticated-User-Email':'admin@example.com'}},production)).status).toBe(401);
-    expect((await post(event(), 'x'.repeat(64))).status).toBe(401);
+    expect(isLoopbackRequest(new Request('http://localhost/',{headers:{'X-Forwarded-For':'127.0.0.1,1.2.3.4'}}),'true')).toBe(false);
+    expect(isLoopbackRequest(new Request('http://localhost/',{headers:{Forwarded:'for=127.0.0.1'}}),'true')).toBe(false);
+    const response=await request('/');expect(response.status).toBe(200);expect(response.headers.get('cache-control')).toBe('no-store');
   });
   it('blocks cross-origin mutations and preserves manual task names',async()=>{
-    expect((await request('/api/tasks/task-a',{method:'PATCH',headers:{'Content-Type':'application/json',Origin:'https://evil.example'},body:'{"archived":true}'})).status).toBe(403);
-    expect((await request('/api/tasks/task-a',{method:'PATCH',headers:{'Content-Type':'application/json',Origin:'http://localhost'},body:'{"name":"My task"}'})).status).toBe(200);
+    const identity=await (await request('/api/me')).json() as {csrf_token:string};
+    expect((await request('/api/tasks/task-a',{method:'PATCH',headers:{'Content-Type':'application/json',Origin:'https://evil.example','X-CSRF-Token':identity.csrf_token},body:'{"archived":true}'})).status).toBe(403);
+    expect((await request('/api/tasks/task-a',{method:'PATCH',headers:{'Content-Type':'application/json',Origin:'http://localhost'},body:'{"archived":true}'})).status).toBe(403);
+    expect((await request('/api/tasks/task-a',{method:'PATCH',headers:{'Content-Type':'application/json',Origin:'http://localhost','X-CSRF-Token':identity.csrf_token},body:'{"name":"My task"}'})).status).toBe(200);
     await post(event({timestamp:timestamp(60),payload:{name:'Native title'}}));
     expect((await getTask())?.name).toBe('My task');
   });
-  it('registers hashed revocable per-host credentials, never returns stored hashes',async()=>{
-    const response=await request('/api/admin/hosts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host_id:'host-new',name:'New machine'})});
-    expect(response.status).toBe(201);
-    const result=await response.json() as {token:string};expect(result.token).toMatch(/^amc_[a-f0-9]{64}$/);
-    const record=await db.prepare('SELECT token_hash FROM host_credentials WHERE host_id=?').bind('host-new').first<{token_hash:string}>();
-    expect(record?.token_hash).toBe(await sha256(result.token));expect(record?.token_hash).not.toBe(result.token);
-    expect((await request('/api/admin/hosts/host-new/credential',{method:'DELETE'})).status).toBe(200);
-    const e=event({host_id:'host-new',session_id:'host:host-new',event_type:'heartbeat',task_id:undefined,run_id:undefined});
-    expect((await post(e,result.token)).status).toBe(401);
+  it('never issues credentials or returns configured token hashes',async()=>{
+    expect((await request('/api/admin/hosts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host_id:'host-new',name:'New machine'})})).status).toBe(404);
+    expect((await request('/api/admin/hosts/host-a/credential',{method:'DELETE'})).status).toBe(404);
     expect(await (await request('/api/hosts')).text()).not.toContain('token_hash');
+    expect(await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='host_credentials'").first()).toBeNull();
+  });
+  it('autocreates hosts only after valid configured credentials, and removal/rotation immediately blocks retries',async()=>{
+    const token='amc_'+'d'.repeat(64);const replacement='amc_'+'e'.repeat(64);
+    const original=env.AGENT_TOKENS_JSON;
+    const e=event({host_id:'configured-host',session_id:'host:configured-host',event_type:'heartbeat',task_id:undefined,run_id:undefined});
+    try {
+      expect((await post(e,token)).status).toBe(401);
+      expect(await db.prepare('SELECT id FROM hosts WHERE id=?').bind(e.host_id).first()).toBeNull();
+      env.AGENT_TOKENS_JSON=JSON.stringify([{host_id:e.host_id,name:'Configured host',token_hash:await sha256(token)}]);
+      expect((await post(e,token)).status).toBe(201);
+      expect((await post(e,token)).status).toBe(200);
+      expect(await db.prepare('SELECT name FROM hosts WHERE id=?').bind(e.host_id).first()).toMatchObject({name:'Configured host'});
+      env.AGENT_TOKENS_JSON='[]';
+      expect((await post(e,token)).status).toBe(401);
+      env.AGENT_TOKENS_JSON=JSON.stringify([{host_id:e.host_id,name:'Renamed host',token_hash:await sha256(replacement)}]);
+      expect((await post(e,token)).status).toBe(401);
+      expect((await post(e,replacement)).status).toBe(200);
+      expect(await db.prepare('SELECT name FROM hosts WHERE id=?').bind(e.host_id).first()).toMatchObject({name:'Renamed host'});
+    } finally {env.AGENT_TOKENS_JSON=original;}
   });
 });
 describe('inference and event throttling',()=>{
@@ -292,12 +272,12 @@ describe('inference and event throttling',()=>{
     // A fresh host isolates the quota from previous test events.
     await db.prepare('INSERT INTO hosts(id,name,created_at) VALUES (?,?,?)').bind('rate-host','Rate host',timestamp()).run();
     const token='amc_'+'c'.repeat(64);
-    await db.prepare('INSERT INTO host_credentials(host_id,token_hash,created_at) VALUES (?,?,?)').bind('rate-host',await sha256(token),timestamp()).run();
+    const rateEnv={...env,AGENT_TOKENS_JSON:JSON.stringify([{host_id:'rate-host',name:'Rate host',token_hash:await sha256(token)}])};
     const received=new Date('2026-10-12T02:00:00.000Z');
     const events=Array.from({length:240},(_,i)=>event({event_id:`rate-${i}`,host_id:'rate-host',session_id:'host:rate-host',task_id:undefined,run_id:undefined,event_type:'heartbeat',timestamp:timestamp()}));
-    for(const e of events) await ingest(db,e,token,received);
-    expect(await ingest(db,events[0],token,received)).toBe(false);
-    await expect(ingest(db,validateEvent({...events[0],event_id:'rate-over'}),token,received)).rejects.toMatchObject({status:429} satisfies Partial<IngestError>);
-    expect(await ingest(db,validateEvent({...events[0],event_id:'rate-later'}),token,new Date(received.getTime()+61_000))).toBe(true);
+    for(const e of events) await ingest(rateEnv,e,token,received);
+    expect(await ingest(rateEnv,events[0],token,received)).toBe(false);
+    await expect(ingest(rateEnv,validateEvent({...events[0],event_id:'rate-over'}),token,received)).rejects.toMatchObject({status:429} satisfies Partial<IngestError>);
+    expect(await ingest(rateEnv,validateEvent({...events[0],event_id:'rate-later'}),token,new Date(received.getTime()+61_000))).toBe(true);
   });
 });

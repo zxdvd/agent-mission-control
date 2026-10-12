@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       confirmation:
-        description: 'Type DEPLOY after reviewing this main commit and the Access policy'
+        description: 'Type DEPLOY after reviewing this main commit and the Worker authentication Secret setup'
         required: true
         type: string
       apply_migrations:
@@ -12,8 +12,8 @@ on:
         required: true
         default: false
         type: boolean
-      access_configured:
-        description: 'I configured Access for this dashboard; only exact /api/events bypasses browser login'
+      auth_secrets_configured:
+        description: 'I configured DASHBOARD_PASSWORD_HASH, SESSION_SECRET and AGENT_TOKENS_JSON as Worker Secrets'
         required: true
         default: false
         type: boolean
@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   validate:
-    if: github.repository == 'zxdvd/agent-mission-control' && github.ref == 'refs/heads/main' && inputs.confirmation == 'DEPLOY' && inputs.access_configured
+    if: github.repository == 'zxdvd/agent-mission-control' && github.ref == 'refs/heads/main' && inputs.confirmation == 'DEPLOY' && inputs.auth_secrets_configured
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -43,7 +43,7 @@ jobs:
       - run: npm run build
   deploy:
     needs: validate
-    if: github.repository == 'zxdvd/agent-mission-control' && github.ref == 'refs/heads/main' && inputs.confirmation == 'DEPLOY' && inputs.access_configured
+    if: github.repository == 'zxdvd/agent-mission-control' && github.ref == 'refs/heads/main' && inputs.confirmation == 'DEPLOY' && inputs.auth_secrets_configured
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
@@ -63,9 +63,6 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
-          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
-          ACCESS_AUD: ${{ vars.ACCESS_AUD }}
-          ADMIN_EMAILS: ${{ vars.ADMIN_EMAILS }}
       - name: Check deployment credential is present (never print it)
         shell: bash
         run: |

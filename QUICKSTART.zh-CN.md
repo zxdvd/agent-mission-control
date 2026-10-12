@@ -16,17 +16,11 @@ npm run dev:worker
 
 打开 http://127.0.0.1:8787。请保持监听地址为本机回环地址，不要把开发模式通过公网隧道暴露出去。
 
-另开一个终端执行下列命令，即可写入三台合成主机及多种任务状态：
-
-```sh
-npm run simulate
-```
-
-示例数据经真实鉴权上报接口写入本地 D1，刷新页面不会消失。正式使用不依赖示例数据。不运行 simulate 就是空白控制台。
+默认启动显示空白控制台。需要合成主机示例时，按 README 的“Synthetic local integration data”流程使用隔离的 `.dev.vars.test`、`.env.test-hosts` 和本地测试数据库。正式使用不依赖示例数据。
 
 ## Codex 接入
 
-完整可执行安装／卸载命令见 adapters/README-adapters.md。先从受保护的管理员界面/接口注册一台主机，把一次性返回的主机凭证存到该机器私有文件，再运行适配器安装命令。凭证不要放进聊天、Git 或公开日志。
+完整可执行安装／卸载命令见 adapters/README-adapters.md。先为每台主机准备独立固定 Token，将 SHA-256 摘要配置到 Worker Secret `AGENT_TOKENS_JSON`，明文存到该机器私有文件，再运行适配器安装命令。凭证不要放进聊天、Git 或公开日志。
 
 默认 notify 模式只观测“一轮回答结束”。不能据此知道审批、任务开始或任务成功。增强 lifecycle hooks 必须由你在安装版本支持的前提下明确准备，并在 Codex 的 /hooks 中审核信任。安装器不绕过这个步骤，也不悄悄覆盖已有通知脚本。
 
@@ -43,11 +37,9 @@ npm run simulate
 
 ## Cloudflare 部署
 
-通过私有GitHub仓库与Actions发布，请按 [GitHub Actions手动部署](DEPLOY.zh-CN.md) 设置production环境、Secret和Variables。PR只检查，不部署。
+按 [GitHub Actions手动部署](DEPLOY.zh-CN.md) 设置 production 环境、部署 Secret 和两个 Variables。当前公开仓库可用 GitHub Free；PR 只检查，不部署。
 
-本交付未自动登录 Cloudflare，未创建公开站点。README.md 列出 D1、Workers Static Assets、Cron、Cloudflare Access 的部署步骤。必须先配置 Access 并让服务端验证 JWT，再部署站点；生产配置缺失时系统默认拒绝访问。
-
-Dashboard 与读／管理 API 使用 Access 身份；/api/events 使用独立且可撤销的主机凭证。不要把所有 /api/* 都设为 Access 绕过，只对确切的上报路径按文档配置。
+本版本使用独立密码登录，不使用 Access。三个应用 Worker Secrets 是 `DASHBOARD_PASSWORD_HASH`、`SESSION_SECRET`、`AGENT_TOKENS_JSON`。登录用户拥有共享管理员权限；每台主机的固定 Token 只能上报，不能访问 Dashboard。缺少生产配置默认拒绝访问。修改密码/会话密钥会失效旧登录，修改或删除 host 的 Token 摘要会轮换/撤销该主机上报权限。
 
 ## 验证命令
 
@@ -57,7 +49,7 @@ npm run lint
 npm test
 npm run build
 # 本地 Worker 已运行后：
-npm run test:integration
+node --env-file=.env.test-hosts scripts/integration.mjs
 ```
 
 具体已通过的测试、原生 CLI 与云部署的未验证项，见 VERIFICATION.md。源码包不包含本地数据库、真实凭证或任何用户对话。

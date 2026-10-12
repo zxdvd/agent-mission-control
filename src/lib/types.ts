@@ -13,4 +13,4 @@ export type Run = { id: string; task_id: string; session_id: string; status: str
 export type Session = { id: string; host_id: string; agent_type: string; status: string; started_at: string; last_activity_at: string; ended_at: string | null }
 export type Overview = { stats: { running: number; waiting: number; failed: number; completed_today: number; online_hosts: number; offline_hosts: number }; tasks: Task[]; hosts: Host[]; attention: Attention[]; server_time: string }
 export type TaskDetail = { task: Task; runs: Run[]; sessions: Session[]; events: AgentEvent[]; attention: Attention[] }
-export type Identity = { role: string; email: string; local: boolean }
+export type Identity = { role: string; email?: string; local: boolean; csrf_token: string }

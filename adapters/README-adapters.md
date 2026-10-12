@@ -20,7 +20,7 @@ Claude hooks 无论成功、网络失败或输入格式错误，stdout 都只输
 
 ## 快速接入：Codex notify
 
-1. 使用 [主机管理员 API](../README.md#register-or-revoke-a-host-administrator-api) 注册这台电脑，安全保存 API 返回的 token。当前主机卡片仅供查看，尚无注册/撤销按钮。每台电脑使用各自的 host ID / token。
+1. 按 [部署说明](../DEPLOY.zh-CN.md) 为这台电脑配置固定 Token：Worker Secret 仅保存 SHA-256 摘要，本机私有文件保存明文。合法首报自动建立主机记录。每台电脑使用各自的 host ID / token。
 2. 将项目保留在一个固定绝对路径；hook 引用其中的脚本。移动/删除项目后应重新安装。
 3. 在本机 Bash 终端执行下面一组命令。输入的 token 不回显、不进入命令历史；不要把 token 写进命令参数、仓库、截图或聊天。
 
@@ -144,7 +144,7 @@ node '/absolute/path/agent-mission-control/adapters/amc.mjs' uninstall
 node '/absolute/path/agent-mission-control/adapters/amc.mjs' uninstall --target claude-hooks
 ```
 
-只按安装清单删除精确匹配的自有 notify 块/hook command，保留其他配置。连接配置、token、缓冲文件和备份保留在本机，防止误删。要让这台电脑失去访问权，通过 [主机管理员 API](../README.md#register-or-revoke-a-host-administrator-api) 撤销 token；需要清理时再手动删除你确认无用的本地文件。若添加过 cron/launchd，也由你删除对应调度项。
+只按安装清单删除精确匹配的自有 notify 块/hook command，保留其他配置。连接配置、token、缓冲文件和备份保留在本机，防止误删。要让这台电脑失去访问权，从 Worker Secret `AGENT_TOKENS_JSON` 删除该 host 的条目来撤销 token；需要清理时再手动删除你确认无用的本地文件。若添加过 cron/launchd，也由你删除对应调度项。
 
 ## 验证与来源
 

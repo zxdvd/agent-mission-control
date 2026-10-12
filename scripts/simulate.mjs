@@ -1,21 +1,17 @@
 #!/usr/bin/env node
 /** Writes synthetic, visibly named scenarios through the real local API. No production support. */
-const base = process.env.AMC_URL || 'http://127.0.0.1:8787';
-if (!['127.0.0.1', 'localhost', '[::1]'].includes(new URL(base).hostname)) throw new Error('Simulation is restricted to a local development server.');
-const batch = Date.now().toString(36);
+import { assertLocalWorker, localOrigin, readTestHosts } from './local-fixtures.mjs';
+const base = localOrigin();
+const hosts = readTestHosts(3).slice(0, 3);
+await assertLocalWorker(base);
+const batch = crypto.randomUUID();
 const now = Date.now();
 async function api(path, body, token) {
-  const response = await fetch(base + path, {method:'POST',headers:{'Content-Type':'application/json',Origin:base,...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify(body)});
+  const response = await fetch(base + path, {method:'POST',redirect:'error',signal:AbortSignal.timeout(10000),headers:{'Content-Type':'application/json',Origin:base,...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify(body)});
   const result = await response.json();
-  if (!response.ok) throw new Error(`${path}: ${response.status} ${JSON.stringify(result)}`);
+  if (!response.ok) throw new Error(`${path}: ${response.status}; check the isolated Worker and matching host fixture configuration.`);
   return result;
 }
-async function host(index, name) {
-  const host_id = `demo-${batch}-${index}`;
-  const registration = await api('/api/admin/hosts', {host_id, name});
-  return {host_id, token:registration.token};
-}
-const hosts = await Promise.all([host(1,'Studio · macOS'),host(2,'Build node · Linux'),host(3,'Travel laptop')]);
 async function event(h, {task, session=task, run=task+'-run-1', type, time=now, agent='codex', payload={}, id}) {
   return api('/api/events',{event_id:id||crypto.randomUUID(),timestamp:new Date(time).toISOString(),host_id:h.host_id,agent_type:agent,session_id:`demo-${batch}-${session}`,task_id:`demo-${batch}-${task}`,run_id:`demo-${batch}-${run}`,event_type:type,payload},h.token);
 }
@@ -34,5 +30,5 @@ for (const item of tasks) {
  await event(item.host,{task:item.task,type:item.type,time:now-5000,payload:{...payload,...(item.type==='task_failed'?{error:'Synthetic fixture: webhook retry assertion did not pass.'}:{})}});
 }
 for(const h of hosts) await api('/api/events',{event_id:crypto.randomUUID(),timestamp:new Date().toISOString(),host_id:h.host_id,agent_type:'codex',session_id:'host:'+h.host_id,event_type:'heartbeat',payload:{}},h.token);
-console.log(`Created ${hosts.length} synthetic hosts and ${tasks.length} tasks using the real local ingestion API.`);
+console.log(`Created ${tasks.length} synthetic tasks across ${hosts.length} preconfigured local test hosts using the real ingestion API.`);
 console.log('The dashboard reads persisted D1 data. Refresh the page to verify persistence.');

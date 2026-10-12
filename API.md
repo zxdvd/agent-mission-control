@@ -1,6 +1,6 @@
 # Monitoring API
 
-All routes except event ingestion require a valid Cloudflare Access identity. Mutations require an admin identity. Static assets are also authenticated. The loopback-only development identity is available solely when LOCAL_DEV=true.
+Dashboard routes require a valid password-login session. The public login page is `/login`; monitoring assets remain authenticated. Browser mutations require a same-origin request and the X-CSRF-Token returned by /api/me. The shared-password identity is an administrator (no separate reader role). The loopback-only development identity is available solely when LOCAL_DEV=true. Agent authentication is separate from browser cookies.
 
 ## Events
 
@@ -30,7 +30,10 @@ The same event_id and canonical body can be retried; the timeline stores one row
 
 ## Console routes
 
-- GET /api/me → role,email,local
+- GET /login → public password form
+- POST /api/auth/login → password authentication and secure session Cookie
+- POST /api/auth/logout → revoke current session (same-origin + CSRF required)
+- GET /api/me → role,local,csrf_token
 - GET /api/overview → stats,tasks,hosts,attention,server_time
 - GET /api/hosts → hosts
 - GET /api/tasks → tasks (unarchived); `?archived=all` includes archived
@@ -38,10 +41,8 @@ The same event_id and canonical body can be retried; the timeline stores one row
 - GET /api/tasks/:id/events?cursor=<opaque>&limit=100 → events,next_cursor (maximum200)
 - PATCH /api/tasks/:id with `{name}` and/or `{archived:boolean}`
 - PATCH /api/attention/:id with `{state:"open"|"read"|"ignored"}`
-- POST /api/admin/hosts with `{host_id,name}` → host,token (one-time plaintext result)
-- DELETE /api/admin/hosts/:id/credential → revoked,host_id
 
-Overview/task lists are bounded to500 rows; overview attention is bounded to200 records. The timeline is paginated and must be followed through next_cursor for older history. This MVP is designed for a personal fleet, not an unbounded organization-wide task index. Credential rotation uses a new host identity after revocation; there is no silent token replacement.
+Overview/task lists are bounded to500 rows; overview attention is bounded to200 records. The timeline is paginated and must be followed through next_cursor for older history. This MVP is designed for a personal fleet, not an unbounded organization-wide task index. Fixed host credentials are configured by `AGENT_TOKENS_JSON` Worker Secret, not through a dashboard API. Replace the digest for rotation or remove the host entry for revocation; its historical identity remains unchanged.
 
 Observed approval/input remains in attention until the operator organizes the item; native event coverage cannot prove resolution. Read/ignore does not mean approved or answered. Stale/offline alerts are inferred, never task failures. A task follows its latest run; explicit terminal outcomes within a run use a separate ordering clock. Session closure never means successful completion, and only an explicit newer session start resumes an ended session.
 
