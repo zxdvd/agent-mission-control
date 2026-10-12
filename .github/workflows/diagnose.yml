@@ -1,0 +1,33 @@
+name: Diagnose Cloudflare metadata (read-only)
+run-name: Diagnose metadata at ${{ github.sha }} by @${{ github.actor }}
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type DIAGNOSE to read only the target Worker metadata; no deploy or migrations'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: cloudflare-metadata-diagnosis
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    if: github.repository == 'zxdvd/agent-mission-control' && github.ref == 'refs/heads/main' && inputs.confirmation == 'DIAGNOSE'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Read metadata and print status codes only
+        run: node scripts/diagnose-cloudflare.mjs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
