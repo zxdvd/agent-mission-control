@@ -32,9 +32,25 @@ describe('full Worker module in workerd', () => {
     const login = await mf.dispatchFetch(`${origin}/login`);
     expect(login.status).toBe(200); const html = await login.text(); expect(html).toContain('type="password"'); expect(html).toContain('autocomplete="username"'); expect(html).not.toContain(username); expect(html).toContain('minlength="8"');
     expect(login.headers.get('cache-control')).toBe('no-store');
+    expect(login.headers.get('referrer-policy')).toBe('same-origin');
     expect((await mf.dispatchFetch(`${origin}/api/me`)).status).toBe(401);
     const insecure = await mf.dispatchFetch('http://console.example/login');
     expect(insecure.status).toBe(403); expect(await insecure.text()).not.toContain('type="password"');
+  });
+  it('keeps form retries compatible with strict Origin checks without accepting null or foreign origins', async () => {
+    const body = new URLSearchParams({username,password:'synthetic-wrong-password'}).toString();
+    const headers = {'Content-Type':'application/x-www-form-urlencoded','Sec-Fetch-Site':'same-origin'};
+    for (const supplied of [undefined,'null','https://other.example']) {
+      const response=await mf.dispatchFetch(`${origin}/api/auth/login`,{method:'POST',headers:{...headers,...(supplied?{Origin:supplied}:{})},body});
+      expect(response.status).toBe(403);expect(response.headers.has('set-cookie')).toBe(false);
+    }
+    const rejected=await mf.dispatchFetch(`${origin}/api/auth/login`,{method:'POST',headers:{...headers,Origin:origin},body});
+    expect(rejected.status).toBe(401);expect(rejected.headers.get('referrer-policy')).toBe('same-origin');
+    expect(await rejected.text()).toContain('<form method="post"');
+    expect(rejected.headers.has('set-cookie')).toBe(false);
+    const retry=await mf.dispatchFetch(`${origin}/api/auth/login`,{method:'POST',redirect:'manual',headers:{...headers,Origin:origin},body:new URLSearchParams({username,password}).toString()});
+    expect(retry.status).toBe(302);expect(retry.headers.has('set-cookie')).toBe(true);
+    expect(retry.headers.get('referrer-policy')).toBe('no-referrer');
   });
   it('verifies a Node-generated password, issues a signed cookie, checks CSRF and revokes logout', async () => {
     const login = await mf.dispatchFetch(`${origin}/api/auth/login`, { method: 'POST', redirect: 'manual', headers: { Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ username, password }).toString() });

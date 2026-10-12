@@ -22,7 +22,13 @@ async function jsonBody(request: Request): Promise<unknown> {
 function securityHeaders(response: Response, url: string): void {
   response.headers.set('Cache-Control','no-store');
   response.headers.set('X-Content-Type-Options','nosniff');
-  response.headers.set('Referrer-Policy','no-referrer');
+  // Native form POSTs under no-referrer carry Origin: null (Fetch Standard).
+  // Preserve their real same-origin Origin on login/retry documents only;
+  // the strict server-side Origin check remains unchanged.
+  const path = new URL(url).pathname;
+  const loginDocument = (path === '/login' || path === '/api/auth/login')
+    && response.headers.get('Content-Type')?.startsWith('text/html');
+  response.headers.set('Referrer-Policy',loginDocument ? 'same-origin' : 'no-referrer');
   response.headers.set('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
   if (new URL(url).protocol === 'https:') response.headers.set('Strict-Transport-Security','max-age=31536000');
 }
