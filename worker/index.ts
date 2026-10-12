@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { authenticate, AuthConfigError, AuthError, clearSessionCookie, createSession, isLoopbackRequest, limitLogin, loginHtml, LoginRateLimitError, requireAuthConfig, revokeSession, sameOriginMutation, validCsrf, verifyPassword } from './auth';
+import { authenticate, AuthConfigError, AuthError, clearSessionCookie, createSession, isLoopbackRequest, limitLogin, loginHtml, LoginRateLimitError, requireAuthConfig, revokeSession, sameOriginMutation, validCsrf, verifyCredentials } from './auth';
 import { ATTENTION_SELECT, TASK_SELECT, getHosts, inferAttention, ingest, IngestError, normalizeAttention, normalizeTask } from './db';
 import { ProtocolError, safeText, validateEvent, validateId } from './protocol';
 import type { AppEnv, Env } from './types';
@@ -80,12 +80,13 @@ app.post('/api/auth/login', async c => {
       }
     } finally { reader.releaseLock(); }
     const fields = new URLSearchParams(new TextDecoder().decode(bytes));
-    if ([...fields.keys()].length !== 1 || !fields.has('password')) throw new ProtocolError('Expected password');
-    body = {password:fields.get('password')};
+    if ([...fields.keys()].length !== 2 || !fields.has('username') || !fields.has('password')) throw new ProtocolError('Expected username and password');
+    body = {username:fields.get('username'),password:fields.get('password')};
   } else body = await jsonBody(c.req.raw);
-  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof (body as Record<string,unknown>).password !== 'string') throw new ProtocolError('Expected password');
-  const valid = await verifyPassword((body as {password:string}).password,c.env.DASHBOARD_PASSWORD_HASH!);
-  if (!valid) return form ? c.html(loginHtml('Incorrect password.'),401) : c.json({error:'Invalid password'},401);
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 2 || typeof (body as Record<string,unknown>).username !== 'string' || typeof (body as Record<string,unknown>).password !== 'string') throw new ProtocolError('Expected username and password');
+  const {username,password} = body as {username:string;password:string};
+  const valid = await verifyCredentials(username,password,c.env);
+  if (!valid) return form ? c.html(loginHtml('Invalid credentials.'),401) : c.json({error:'Invalid credentials'},401);
   c.header('Set-Cookie',await createSession(c.env));
   return form ? c.redirect('/',302) : c.json({ok:true});
 });

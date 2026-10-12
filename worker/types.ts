@@ -1,6 +1,7 @@
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
+  DASHBOARD_USERNAME?: string;
   DASHBOARD_PASSWORD_HASH?: string;
   SESSION_SECRET?: string;
   SESSION_VERSION?: string;

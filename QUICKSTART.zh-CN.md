@@ -37,9 +37,9 @@ npm run dev:worker
 
 ## Cloudflare 部署
 
-按 [GitHub Actions手动部署](DEPLOY.zh-CN.md) 设置 production 环境、部署 Secret 和两个 Variables。当前公开仓库可用 GitHub Free；PR 只检查，不部署。
+按 [GitHub Actions手动部署](DEPLOY.zh-CN.md) 设置 production 环境、部署 Secret 和三个 Variables（账号ID、D1 ID、DASHBOARD_USERNAME）。当前公开仓库可用 GitHub Free；PR 只检查，不部署。
 
-本版本使用独立密码登录，不使用 Access。三个应用 Worker Secrets 是 `DASHBOARD_PASSWORD_HASH`、`SESSION_SECRET`、`AGENT_TOKENS_JSON`。登录用户拥有共享管理员权限；每台主机的固定 Token 只能上报，不能访问 Dashboard。缺少生产配置默认拒绝访问。修改密码/会话密钥会失效旧登录，修改或删除 host 的 Token 摘要会轮换/撤销该主机上报权限。
+本版本使用独立固定用户名和密码登录（密码至少8字符），不使用 Access。三个应用 Worker Secrets 是 `DASHBOARD_PASSWORD_HASH`、`SESSION_SECRET`、`AGENT_TOKENS_JSON`。登录用户拥有共享管理员权限；每台主机的固定 Token 只能上报，不能访问 Dashboard。缺少生产配置默认拒绝访问。修改密码/会话密钥会失效旧登录，修改或删除 host 的 Token 摘要会轮换/撤销该主机上报权限。
 
 ## 验证命令
 

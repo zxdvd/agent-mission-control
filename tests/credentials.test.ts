@@ -16,7 +16,7 @@ describe('local credential preparation utilities (synthetic only)',()=>{
   }
  });
  it('refuses short passwords and oversized host tokens',()=>{
-  expect(spawnSync(process.execPath,['scripts/password-hash.mjs'],{input:'short\n'}).status).not.toBe(0);
+  expect(spawnSync(process.execPath,['scripts/password-hash.mjs'],{input:'test123\n'}).status).not.toBe(0);
   expect(spawnSync(process.execPath,['scripts/token-hash.mjs'],{input:'x'.repeat(2048)}).status).not.toBe(0);
  });
 });

@@ -1,6 +1,6 @@
 # Monitoring API
 
-Dashboard routes require a valid password-login session. The public login page is `/login`; monitoring assets remain authenticated. Browser mutations require a same-origin request and the X-CSRF-Token returned by /api/me. The shared-password identity is an administrator (no separate reader role). The loopback-only development identity is available solely when LOCAL_DEV=true. Agent authentication is separate from browser cookies.
+Dashboard routes require a valid fixed-username/password-login session. The public login page is `/login`; monitoring assets remain authenticated. Browser mutations require a same-origin request and the X-CSRF-Token returned by /api/me. The shared-password identity is an administrator (no separate reader role). The loopback-only development identity is available solely when LOCAL_DEV=true. Agent authentication is separate from browser cookies.
 
 ## Events
 
@@ -31,7 +31,7 @@ The same event_id and canonical body can be retried; the timeline stores one row
 ## Console routes
 
 - GET /login → public password form
-- POST /api/auth/login → password authentication and secure session Cookie
+- POST /api/auth/login with `{username,password}` (or form fields) → fixed-account authentication and secure session Cookie
 - POST /api/auth/logout → revoke current session (same-origin + CSRF required)
 - GET /api/me → role,local,csrf_token
 - GET /api/overview → stats,tasks,hosts,attention,server_time

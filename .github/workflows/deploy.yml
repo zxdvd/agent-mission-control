@@ -63,6 +63,7 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+          DASHBOARD_USERNAME: ${{ vars.DASHBOARD_USERNAME }}
       - name: Check deployment credential is present (never print it)
         shell: bash
         run: |

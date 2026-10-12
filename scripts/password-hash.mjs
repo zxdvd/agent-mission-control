@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 // Standard PBKDF2 only: Workers production has a 100,000-iteration ceiling.
 // https://github.com/cloudflare/workerd/issues/1346
 export async function passwordHash(password) {
-  if (typeof password !== 'string' || password.length < 16 || Buffer.byteLength(password, 'utf8') > 1024) throw new Error('Use a password of at least 16 characters and at most 1024 UTF-8 bytes; a long randomly generated password is recommended.');
+  if (typeof password !== 'string' || password.length < 8 || Buffer.byteLength(password, 'utf8') > 1024) throw new Error('Use a password of at least 8 characters and at most 1024 UTF-8 bytes; a long randomly generated password is recommended.');
   const salt = randomBytes(16);
   const hash = await promisify(pbkdf2)(password, salt, 100_000, 32, 'sha256');
   return `pbkdf2-sha256$100000$${salt.toString('base64url')}$${hash.toString('base64url')}`;
@@ -20,7 +20,7 @@ async function readPassword() {
     }
     return input.replace(/\r?\n$/, '');
   }
-  process.stderr.write('Dashboard password (hidden, minimum 16 characters): ');
+  process.stderr.write('Dashboard password (hidden, minimum 8 characters): ');
   process.stdin.setRawMode(true);
   process.stdin.setEncoding('utf8');
   process.stdin.resume();

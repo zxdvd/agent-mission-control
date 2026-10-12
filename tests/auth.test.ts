@@ -1,8 +1,9 @@
-import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from 'vitest';
 import { readFile, readdir } from 'node:fs/promises';
+import { pbkdf2Sync } from 'node:crypto';
 import { Miniflare } from 'miniflare';
 import { app } from '../worker/index';
-import { authenticate, configuredHosts, createSession, limitLogin, parsePasswordHash, requireAuthConfig, SESSION_SECONDS, verifyPassword } from '../worker/auth';
+import { authenticate, configuredHosts, createSession, limitLogin, parsePasswordHash, requireAuthConfig, SESSION_SECONDS, verifyCredentials, verifyPassword } from '../worker/auth';
 import { sha256 } from '../worker/protocol';
 import type { Env } from '../worker/types';
 // @ts-expect-error The offline helper is plain Node ESM.
@@ -12,6 +13,7 @@ let mf: Miniflare;
 let db: D1Database;
 let env: Env;
 let verifier: string;
+const username = 'test.admin';
 const password = 'synthetic-test-password-only-2026';
 const hostToken = 'amc_' + 'f'.repeat(64);
 const origin = 'https://console.example';
@@ -20,7 +22,7 @@ async function request(path: string, init: RequestInit = {}, settings = env) {
   return app.request(`${origin}${path}`, init, settings);
 }
 async function login(init: RequestInit = {}, settings = env) {
-  return request('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin, 'CF-Connecting-IP': '192.0.2.1' }, body: JSON.stringify({ password }), ...init }, settings);
+  return request('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin, 'CF-Connecting-IP': '192.0.2.1' }, body: JSON.stringify({ username, password }), ...init }, settings);
 }
 async function signedIn() {
   const response = await login();
@@ -50,7 +52,7 @@ beforeAll(async () => {
 }, 30_000);
 beforeEach(async () => {
   await db.batch([db.prepare('DELETE FROM dashboard_sessions'), db.prepare('DELETE FROM login_attempts')]);
-  env = { DB: db, LOCAL_DEV: 'false', DASHBOARD_PASSWORD_HASH: verifier, SESSION_SECRET: 'synthetic-session-key-not-for-deployment-0123456789', SESSION_VERSION: 'v1', AGENT_TOKENS_JSON: JSON.stringify([{ host_id: 'secure-host', name: 'Secure host', token_hash: await sha256(hostToken) }]), ASSETS: { fetch: async () => new Response('private app') } as unknown as Fetcher };
+  env = { DB: db, LOCAL_DEV: 'false', DASHBOARD_USERNAME: username, DASHBOARD_PASSWORD_HASH: verifier, SESSION_SECRET: 'synthetic-session-key-not-for-deployment-0123456789', SESSION_VERSION: 'v1', AGENT_TOKENS_JSON: JSON.stringify([{ host_id: 'secure-host', name: 'Secure host', token_hash: await sha256(hostToken) }]), ASSETS: { fetch: async () => new Response('private app') } as unknown as Fetcher };
 });
 afterAll(async () => { await mf?.dispose(); });
 
@@ -68,15 +70,38 @@ describe('configuration and password verifier', () => {
     expect(await verifyPassword('', verifier)).toBe(false);
     expect(await verifyPassword('x'.repeat(1025), verifier)).toBe(false);
     await expect(passwordHash('short')).rejects.toThrow();
+    await expect(passwordHash('test123')).rejects.toThrow('at least 8');
+    expect(await verifyPassword('test1234', await passwordHash('test1234'))).toBe(true);
+    // Even a manually configured matching verifier must not accept <8 chars.
+    const salt = Buffer.alloc(16, 1);
+    const shortHash = `pbkdf2-sha256$100000$${salt.toString('base64url')}$${pbkdf2Sync('test123', salt, 100000, 32, 'sha256').toString('base64url')}`;
+    expect(await verifyPassword('test123', shortHash)).toBe(false);
     expect(() => parsePasswordHash(verifier.replace('$100000$', '$600000$'))).toThrow();
     expect(() => parsePasswordHash(verifier.replace('$100000$', '$1$'))).toThrow();
     expect(() => parsePasswordHash('plaintext-password')).toThrow();
   });
-  it.each(['DASHBOARD_PASSWORD_HASH', 'SESSION_SECRET', 'AGENT_TOKENS_JSON'] as const)('fails closed for missing %s on dashboard and ingest', async key => {
+  it.each(['DASHBOARD_USERNAME', 'DASHBOARD_PASSWORD_HASH', 'SESSION_SECRET', 'AGENT_TOKENS_JSON'] as const)('fails closed for missing %s on dashboard and ingest', async key => {
     const settings = { ...env, [key]: undefined };
     expect((await request('/api/me', {}, settings)).status).toBe(503);
     expect((await request('/api/events', { method: 'POST', headers: { Authorization: `Bearer ${hostToken}` } }, settings)).status).toBe(503);
     expect((await login({}, settings)).status).toBe(503);
+  });
+  it('requires an explicit 1–64 character ASCII username without silently trimming it', () => {
+    for (const value of ['a', 'Admin.user_1-2', 'a'.repeat(64)]) expect(() => requireAuthConfig({ ...env, DASHBOARD_USERNAME: value })).not.toThrow();
+    for (const value of ['', 'a'.repeat(65), ' admin', 'admin ', 'admin\n', 'admin\r', 'admin user', '管理员', '-admin', '_admin', 'admin@example.com']) {
+      expect(() => requireAuthConfig({ ...env, DASHBOARD_USERNAME: value })).toThrow('username');
+    }
+  });
+  it('derives the password even for an incorrect username and compares usernames exactly', async () => {
+    const derive = vi.spyOn(crypto.subtle, 'deriveBits');
+    try {
+      expect(await verifyCredentials('wrong.user', password, env)).toBe(false);
+      expect(derive).toHaveBeenCalledTimes(1);
+      expect(await verifyCredentials(username.toUpperCase(), password, env)).toBe(false);
+      expect(await verifyCredentials(` ${username}`, password, env)).toBe(false);
+      expect(await verifyCredentials(username, password, env)).toBe(true);
+      expect(derive).toHaveBeenCalledTimes(4);
+    } finally { derive.mockRestore(); }
   });
   it('accepts an explicitly empty token list to disable ingest; rejects malformed/duplicate config', async () => {
     expect(() => requireAuthConfig({ ...env, AGENT_TOKENS_JSON: '[]' })).not.toThrow();
@@ -89,10 +114,10 @@ describe('configuration and password verifier', () => {
     expect(response.status).toBe(401);
   });
 });
-describe('password login and private pages', () => {
+describe('fixed-account login and private pages', () => {
   it('serves only login publicly and rejects old Access and host-token dashboard credentials', async () => {
     const page = await request('/login');
-    expect(page.status).toBe(200); expect(await page.text()).toContain('type="password"');
+    expect(page.status).toBe(200); const html = await page.text(); expect(html).toContain('type="password"'); expect(html).toContain('autocomplete="username"'); expect(html).toContain('minlength="8"'); expect(html).not.toContain(username);
     expect(page.headers.get('cache-control')).toBe('no-store');
     expect(page.headers.get('content-security-policy')).toContain("form-action 'self'");
     const root = await request('/'); expect(root.status).toBe(302); expect(root.headers.get('location')).toBe('/login');
@@ -114,20 +139,49 @@ describe('password login and private pages', () => {
       expect((await login({ headers })).status).toBe(403);
     }
     expect((await login({ headers: { Origin: origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-site' } })).status).toBe(403);
-    expect((await app.request('http://console.example/api/auth/login', { method: 'POST', headers: { Origin: 'http://console.example', 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) }, env)).status).toBe(403);
+    expect((await app.request('http://console.example/api/auth/login', { method: 'POST', headers: { Origin: 'http://console.example', 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) }, env)).status).toBe(403);
     expect((await app.request('http://console.example/api/events', { method: 'POST', headers: { Authorization: `Bearer ${hostToken}` } }, env)).status).toBe(403);
     expect((await app.request('http://console.example/api/me', {}, env)).status).toBe(403);
     const insecureLogin=await app.request('http://console.example/login',{},env);expect(insecureLogin.status).toBe(403);expect(await insecureLogin.text()).not.toContain('type="password"');
   });
   it('validates wrong and malformed inputs without creating a session or echoing password', async () => {
-    const response = await login({ body: JSON.stringify({ password: 'bad-password' }) });
+    const response = await login({ body: JSON.stringify({ username, password: 'bad-password' }) });
     expect(response.status).toBe(401); expect(response.headers.has('set-cookie')).toBe(false); expect(await response.text()).not.toContain('bad-password');
-    for (const body of ['null', '[]', '{}', '{"password":12}', '{"password":"abc","extra":true}']) expect((await login({ body })).status).toBe(400);
+    for (const body of ['null', '[]', '{}', JSON.stringify({ password }), JSON.stringify({ username }), JSON.stringify({ username: 12, password }), JSON.stringify({ username, password: 12 }), JSON.stringify({ username, password, extra: true })]) expect((await login({ body })).status).toBe(400);
     expect((await login({ body: 'x'.repeat(17_000) })).status).toBe(400);
     expect(await db.prepare('SELECT count(*) n FROM dashboard_sessions').first()).toMatchObject({ n: 0 });
   });
+  it('returns identical credential errors for wrong username, wrong password and both wrong', async () => {
+    for (const credentials of [
+      { username: 'unknown.user', password },
+      { username, password: 'bad-password' },
+      { username: 'unknown.user', password: 'bad-password' },
+      { username: '', password },
+      { username: `${username} `, password },
+    ]) {
+      const response = await login({ body: JSON.stringify(credentials) });
+      expect(response.status).toBe(401); expect(response.headers.has('set-cookie')).toBe(false);
+      expect(await response.json()).toEqual({ error: 'Invalid credentials' });
+    }
+    expect(await db.prepare('SELECT count(*) n FROM dashboard_sessions').first()).toMatchObject({ n: 0 });
+  });
+  it('requires both unique form fields and gives a generic form credential error', async () => {
+    const headers = { Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' };
+    for (const body of [new URLSearchParams({ password }).toString(), new URLSearchParams({ username }).toString(), `username=${username}&username=other&password=${password}`, `username=${username}&password=${password}&extra=true`]) {
+      const response = await login({ headers, body });
+      expect(response.status).toBe(400); expect(response.headers.has('set-cookie')).toBe(false);
+      expect(await response.json()).toEqual({ error: 'Expected username and password' });
+    }
+    for (const credentials of [{ username: 'unknown.user', password }, { username, password: 'bad-password' }]) {
+      const response = await login({ headers, body: new URLSearchParams(credentials).toString() });
+      expect(response.status).toBe(401); expect(response.headers.has('set-cookie')).toBe(false);
+      const html = await response.text(); expect(html).toContain('Invalid credentials.');
+      expect(html).not.toContain(credentials.username); expect(html).not.toContain(credentials.password);
+    }
+    expect(await db.prepare('SELECT count(*) n FROM dashboard_sessions').first()).toMatchObject({ n: 0 });
+  });
   it('supports an ordinary login form and emits a hardened host-only session cookie', async () => {
-    const response = await login({ headers: { Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ password }).toString() });
+    const response = await login({ headers: { Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ username, password }).toString() });
     expect(response.status).toBe(302); expect(response.headers.get('location')).toBe('/');
     const cookie = response.headers.get('set-cookie')!;
     expect(cookie).toMatch(/^__Host-amc_session=/); expect(cookie).toContain('HttpOnly'); expect(cookie).toContain('Secure'); expect(cookie).toContain('SameSite=Strict'); expect(cookie).toContain('Path=/'); expect(cookie).not.toContain('Domain='); expect(cookie).toContain(`Max-Age=${SESSION_SECONDS}`);
@@ -148,11 +202,11 @@ describe('signed sessions, CSRF, expiry and revocation', () => {
     await db.prepare('DELETE FROM dashboard_sessions').run();
     expect((await request('/api/me', { headers: { Cookie: cookie } })).status).toBe(401);
   });
-  it('rejects expired sessions, secret rotation, password changes and version rotation', async () => {
+  it('rejects expired sessions, secret rotation, username/password changes and version rotation', async () => {
     const expired = cookiePair(await createSession(env, Date.now() - (SESSION_SECONDS + 10) * 1000));
     expect((await request('/api/me', { headers: { Cookie: expired } })).status).toBe(401);
     const { cookie } = await signedIn();
-    for (const settings of [{ ...env, SESSION_SECRET: 'other-synthetic-signing-secret-0123456789' }, { ...env, SESSION_VERSION: 'v2' }, { ...env, DASHBOARD_PASSWORD_HASH: await passwordHash('different-synthetic-password') }]) {
+    for (const settings of [{ ...env, SESSION_SECRET: 'other-synthetic-signing-secret-0123456789' }, { ...env, SESSION_VERSION: 'v2' }, { ...env, DASHBOARD_USERNAME: 'new.admin' }, { ...env, DASHBOARD_PASSWORD_HASH: await passwordHash('different-synthetic-password') }]) {
       expect((await request('/api/me', { headers: { Cookie: cookie } }, settings)).status).toBe(401);
     }
   });

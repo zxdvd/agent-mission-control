@@ -7,6 +7,7 @@ import type { Env, Identity } from './types';
 export const PASSWORD_ITERATIONS = 100_000;
 export const SESSION_SECONDS = 12 * 60 * 60;
 const SESSION_COOKIE = '__Host-amc_session';
+const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 let localCsrf: string | undefined;
 const encoder = new TextEncoder();
 export class AuthConfigError extends Error {}
@@ -74,6 +75,7 @@ export function configuredHosts(env: Env): HostCredential[] {
   } catch { throw new AuthConfigError('Host credentials are not configured correctly'); }
 }
 export function requireAuthConfig(env: Env): void {
+  if (typeof env.DASHBOARD_USERNAME !== 'string' || env.DASHBOARD_USERNAME.trim() !== env.DASHBOARD_USERNAME || !USERNAME_PATTERN.test(env.DASHBOARD_USERNAME)) throw new AuthConfigError('Dashboard username is not configured correctly');
   parsePasswordHash(env.DASHBOARD_PASSWORD_HASH);
   if (!env.SESSION_SECRET || encoder.encode(env.SESSION_SECRET).length < 32 || env.SESSION_SECRET.length > 1024) throw new AuthConfigError('Session signing secret is not configured correctly');
   if (env.SESSION_VERSION !== undefined && !/^[A-Za-z0-9_.-]{1,64}$/.test(env.SESSION_VERSION)) throw new AuthConfigError('Invalid session version');
@@ -81,17 +83,28 @@ export function requireAuthConfig(env: Env): void {
 }
 export async function verifyPassword(password: string, verifier: string): Promise<boolean> {
   const { salt, hash } = parsePasswordHash(verifier);
-  if (encoder.encode(password).length > 1024 || !password.length) return false;
+  if (encoder.encode(password).length > 1024 || password.length < 8) return false;
   const key = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
   const derived = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: PASSWORD_ITERATIONS }, key, 256));
   return equal(derived, hash);
+}
+export async function verifyCredentials(username: string, password: string, env: Env): Promise<boolean> {
+  requireAuthConfig(env);
+  // Never skip password derivation because the username is wrong. Fixed-length
+  // digests also keep the account comparison independent of its prefix/length.
+  const [providedName, expectedName, validPassword] = await Promise.all([
+    sha256(username), sha256(env.DASHBOARD_USERNAME!), verifyPassword(password, env.DASHBOARD_PASSWORD_HASH!),
+  ]);
+  const validUsername = equal(encoder.encode(providedName), encoder.encode(expectedName));
+  return validUsername && validPassword;
 }
 async function signingKey(env: Env): Promise<CryptoKey> {
   return crypto.subtle.importKey('raw', encoder.encode(env.SESSION_SECRET!), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
 }
 async function configVersion(env: Env): Promise<string> {
-  // Changing the password verifier also invalidates every existing session.
-  return sha256(`${env.SESSION_VERSION ?? '1'}:${env.DASHBOARD_PASSWORD_HASH}`);
+  // Changing either credential invalidates every existing session. Structured
+  // encoding keeps boundaries unambiguous as configuration evolves.
+  return sha256(JSON.stringify([env.SESSION_VERSION ?? '1', env.DASHBOARD_USERNAME, env.DASHBOARD_PASSWORD_HASH]));
 }
 async function csrfToken(sid: string, env: Env): Promise<string> {
   return encode64(new Uint8Array(await crypto.subtle.sign('HMAC', await signingKey(env), encoder.encode(`csrf:${sid}`))));
@@ -156,5 +169,5 @@ export async function limitLogin(request: Request, env: Env, now = Date.now()): 
 }
 export function loginHtml(message = ''): string {
   // Only hardcoded server messages reach this document; no user input is echoed.
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign in · Agent Mission Control</title><style>body{margin:0;background:#10131a;color:#eef2ff;font:16px system-ui,sans-serif;display:grid;min-height:100vh;place-items:center}main{max-width:360px;width:calc(100% - 64px);padding:32px;background:#191f2b;border:1px solid #343d50;border-radius:18px}h1{font-size:24px}p{line-height:1.5;color:#b8c1d7}label{display:block;margin:20px 0 8px}input,button{box-sizing:border-box;width:100%;padding:12px;border-radius:8px;font:inherit}input{background:#10131a;color:#fff;border:1px solid #65728e}button{margin-top:16px;background:#b6c6ff;border:0;cursor:pointer;font-weight:600}.error{color:#ffb0b0}</style></head><body><main><h1>Agent Mission Control</h1><p>Sign in with your dashboard password.</p>${message ? `<p class="error" role="alert">${message}</p>` : ''}<form method="post" action="/api/auth/login"><label for="password">Password</label><input id="password" name="password" type="password" required autocomplete="current-password" maxlength="1024" autofocus><button type="submit">Sign in</button></form><p>Shared-password MVP: everyone who signs in has administrator access.</p></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign in · Agent Mission Control</title><style>body{margin:0;background:#10131a;color:#eef2ff;font:16px system-ui,sans-serif;display:grid;min-height:100vh;place-items:center}main{max-width:360px;width:calc(100% - 64px);padding:32px;background:#191f2b;border:1px solid #343d50;border-radius:18px}h1{font-size:24px}p{line-height:1.5;color:#b8c1d7}label{display:block;margin:20px 0 8px}input,button{box-sizing:border-box;width:100%;padding:12px;border-radius:8px;font:inherit}input{background:#10131a;color:#fff;border:1px solid #65728e}button{margin-top:16px;background:#b6c6ff;border:0;cursor:pointer;font-weight:600}.error{color:#ffb0b0}</style></head><body><main><h1>Agent Mission Control</h1><p>Sign in with your dashboard username and password.</p>${message ? `<p class="error" role="alert">${message}</p>` : ''}<form method="post" action="/api/auth/login"><label for="username">Username</label><input id="username" name="username" type="text" required autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" autofocus><label for="password">Password</label><input id="password" name="password" type="password" required autocomplete="current-password" minlength="8" maxlength="1024"><button type="submit">Sign in</button></form><p>Single-account MVP: this account has administrator access.</p></main></body></html>`;
 }
