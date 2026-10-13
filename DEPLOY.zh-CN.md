@@ -1,6 +1,6 @@
-# 独立密码登录：GitHub Actions 手动部署
+# 独立密码登录：GitHub Actions 自动与手动部署
 
-目标仓库：`zxdvd/agent-mission-control`。当前是公开源码；GitHub Free 可使用公开仓库的 environments、environment secrets、分支限制与 required reviewers。**源码公开不等于监控数据公开。** 本版本不依赖 Cloudflare Access；Dashboard 使用自己的固定用户名和密码登录，上报使用每台主机独立的固定 Token。未自动部署，也未生成真实凭证。
+目标仓库：`zxdvd/agent-mission-control`。当前是公开源码；GitHub Free 可使用公开仓库的 environments、environment secrets、分支限制与 required reviewers。**源码公开不等于监控数据公开。** 本版本不依赖 Cloudflare Access；Dashboard 使用自己的固定用户名和密码登录，上报使用每台主机独立的固定 Token。main 推送在同一提交通过全部检查后自动发布，保留手动入口；只复用既有生产配置，不生成凭证、不改变权限或套餐。
 
 **Cloudflare 运行额度需单独确认：** Workers Free 当前每次请求 CPU 限额为10ms，PBKDF2 登录校验可能超出。GitHub Free 支持生产环境不代表 Cloudflare Free 一定能运行密码校验。首次上线必须测试实际登录是否触发 CPU 超限；如需付费方案，先由你决定，代码不会自动升级或降低密码校验强度。见[官方 CPU 限额](https://developers.cloudflare.com/workers/platform/limits/)。
 
@@ -41,25 +41,45 @@
 
 在 `production` environment 的 Secrets 添加 `CLOUDFLARE_API_TOKEN`。这只是部署凭证，不是登录密码，也不是主机 Token。
 
-建议先完成资源初始化，再在 Cloudflare `Manage account → Account API tokens → Create Token` 创建 account-owned token。当前 Wrangler 细粒度权限要求这种 Token。只给已存在的 `agent-mission-control` Worker Editor 权限；绑定现有 D1 不需额外 D1 权限，但执行 migration 需要 D1 写权限。首次创建 Worker 需要 Workers 产品 Admin，应与持续部署权限分开。本工作流不设置 DNS、Route 或 Access，无需默认授权所有 Zone/DNS/Access。不要使用 Global API Key。
+建议先完成资源初始化，再在 Cloudflare `Manage account → Account API tokens → Create Token` 创建 account-owned token。当前 Wrangler 细粒度权限要求这种 Token。只给已存在的 `agent-mission-control` Worker Editor 权限；本项目部署前还会只读查询目标 D1 的迁移账本，执行手动 migration 则需要 D1 写权限。当前生产 Token 已用于迁移，本次复用它，不扩展任何权限。首次创建 Worker 需要 Workers 产品 Admin，应与持续部署权限分开。本工作流不设置 DNS、Route 或 Access，无需默认授权所有 Zone/DNS/Access。不要使用 Global API Key。
 
 工作流只把部署 Token 注入需要认证的步骤，不注入 npm install、测试、前端 build，也不写进生成的配置。三个应用 Worker Secrets 由你单独设置，工作流不自动创建、读取或覆写它们。
 
-## 4. 手动发布
+## 4. 自动发布与手动入口
 
-1. `Actions → Deploy production (manual) → Run workflow`，选择 main。
+### main 自动发布
+
+推送到目标仓库的 main（包括合并 PR）会启动 `Deploy production`。同一 workflow 的 `validate` job 先锁定触发 SHA，执行 `npm ci`、typecheck、lint、全部单元/适配器测试和 build；只有它成功后，`needs: validate` 才允许 `deploy` job 使用 `production` environment。独立 CI 继续检查 main 和 PR；部署校验与 CI 的检查命令由回归测试保持一致。部署不会采用另一提交的绿色结果，也不会跳过校验直接发布。
+
+只有 `zxdvd/agent-mission-control` 的 main push 或经过原有确认的 main 手动运行能进入部署。PR、fork 和其他分支不会进入生产 job。既有 environment 分支限制、审批与 Secrets 保持不变；如 production 配置了 required reviewers，自动运行仍会等待审批。不会为绕过审批而修改环境设置。
+
+**自动发布永不执行 D1 migration。** 当前生产的 `0001_initial.sql`、`0002_password_sessions.sql` 已应用，本次不重新迁移。部署前的 `check-deploy-migrations.mjs` 使用既有 Token，只执行 `SELECT name FROM d1_migrations ORDER BY id`，严格解析 Wrangler 的 JSON 结果并与本次提交的 SQL 文件清单比较。存在待迁移文件、账本多出文件、缺表、响应异常或权限/网络失败都会阻断部署；不把空输出或命令退出成功当成“无待迁移”。不打印原始返回、数据库内容或凭据。
+
+没有使用 `wrangler d1 migrations list`，因为当前锁定版本会执行 `CREATE TABLE IF NOT EXISTS` 初始化账本，且不支持 JSON 输出。固定 SELECT 只读查询不会初始化缺失表。账本仅记录文件名，无法检测已经应用的 SQL 内容或数据库结构被外部改动；**不要修改已经应用的迁移文件**，结构变更必须新增迁移并单独审查。今后新增 SQL 时通过明确勾选 `apply_migrations` 的手动入口执行；手动迁移成功后仍要通过同一账本检查才能发布。工作流不读取或更改应用身份 Secrets。
+
+所有自动和手动运行共用 `production-deploy` 串行锁，`cancel-in-progress: false`，避免中断已开始的迁移或发布。每次 Cloudflare 写入前，脚本核对本地 HEAD、触发 SHA、远端 main HEAD 完全相同；旧运行重跑、排队期间 main 已更新或远端查询失败都会停止，不会把新 main 内容偷偷换入已通过校验的旧运行。GitHub 的排队顺序不保证与推送顺序一致，因此串行锁和最新 SHA 检查必须同时保留。
+
+如果新提交在旧版本的 Cloudflare 写入开始后才到达，已开始的写入会完成，新提交通过检查后接续发布。串行锁防止旧发布在新发布之后完成。需要回退代码时，将回退作为新的 main 提交通过检查再发布；不要重跑旧 SHA。
+
+### 手动发布
+
+1. `Actions → Deploy production → Run workflow`，选择 main。
 2. 输入 `DEPLOY`，勾选已配置 Worker 身份 Secrets。
-3. 首次上线或新增经过审查的迁移时勾选 `apply_migrations`（默认 false）。本次密码版本有会话/登录限流迁移，升级旧版本也要执行待迁移 SQL。`0002_password_sessions.sql` 会删除旧的 `host_credentials` 表（只移除已停用的旧摘要，不删主机/任务历史）；旧 Token 不会自动迁入新配置，必须先准备 `AGENT_TOKENS_JSON`。
+3. `apply_migrations` 默认 false，当前生产发布保持未勾选。只有首次部署到新数据库或有新增且经过审查的迁移时才显式勾选。`0002_password_sessions.sql` 会删除旧的 `host_credentials` 表（只移除已停用的旧摘要，不删主机/任务历史）；旧 Token 不会自动迁入新配置，必须先准备 `AGENT_TOKENS_JSON`。
 4. 等校验通过，再完成你设置的 production 审批。
 
-push/PR 只跑 CI；不会自动部署。生产只允许指定仓库 main，锁定触发 commit SHA，串行发布不相互取消。第三方 Actions 固定 commit。工作流中的确认只证明你确认了设置，不能替代真实线上验收。
+手动入口同样只发布当前 main、重跑全部校验并遵守串行锁；它不是跳过检查或部署历史提交的后门。第三方 Actions 固定 commit。工作流中的确认只证明你确认了设置，不能替代真实线上验收。
 
 工作流执行：
 
 ```sh
 node scripts/prepare-deploy.mjs
-# 仅显式勾选时：
+# 仅手动运行且显式勾选时；每次写入前重新检查 main：
+node scripts/check-deploy-head.mjs
 npx --no-install wrangler d1 migrations apply mission-control --remote --config .wrangler.deploy.json
+# 自动和手动发布均执行；仅查询迁移文件名：
+node scripts/check-deploy-migrations.mjs
+node scripts/check-deploy-head.mjs
 npx --no-install wrangler deploy --config .wrangler.deploy.json
 ```
 
@@ -77,8 +97,11 @@ npx --no-install wrangler deploy --config .wrangler.deploy.json
 ## 官方参考
 
 - [GitHub环境资格及保护规则](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)
+- [GitHub工作流依赖与触发语法](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)
+- [GitHub工作流并发与排队](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
 - [Cloudflare Worker Secrets](https://developers.cloudflare.com/workers/configuration/secrets/)
 - [Cloudflare最小权限](https://developers.cloudflare.com/workers/authorization/)
+- [Cloudflare D1命令与JSON输出](https://developers.cloudflare.com/d1/wrangler-commands/)
 - [Cloudflare账号级Token](https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/)
 
 ## D1 首次迁移报 `incomplete input` 时
