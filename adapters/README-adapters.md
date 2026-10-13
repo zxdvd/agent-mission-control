@@ -2,6 +2,10 @@
 
 优先支持 Codex，另提供 Claude Code 观察型 hooks。Node.js 20+，macOS / Linux / WSL；不安装 daemon，不读取会话记录，不远程操作审批。OpenCode 暂未实现。
 
+## 推荐入口：轻量安装
+
+Codex App 本地 hooks 用户请先看[轻量 curl 安装与验收](../INSTALL.zh-CN.md)。入口固定版本并校验四个适配器文件，默认明确选择 hooks；下文直接调用底层 CLI 的默认 notify 行为保持兼容。
+
 ## 真实能力边界
 
 | 方式 | 能观察到 | 不能据此判断 |

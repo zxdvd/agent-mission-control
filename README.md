@@ -8,6 +8,10 @@ Only host/task/run/session identifiers and explicitly allowed metadata reach the
 
 Connection, activity, attention and task outcome are independent. A turn ending is idle, not task completion. No events is unknown/stale, not failure. An agent process exiting is not proof that its task passed. Inferred alerts are visibly different from directly observed requests/errors. Codex notify-only cannot report approvals or the start of a turn; lifecycle hooks provide greater coverage only after explicit local trust.
 
+## Lightweight local adapter install
+
+For Codex App local hooks, see [轻量 curl 安装与验收](INSTALL.zh-CN.md). The fixed-version installer downloads only four Node.js built-in-module adapters, preserves other hooks and existing credentials, and requires local hook review/trust. It does not install Node or a daemon.
+
 ## Local development
 
 Requires Node.js 22 or newer and npm.
