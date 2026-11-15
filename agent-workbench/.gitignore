@@ -1,7 +1,0 @@
-/dist/
-/web/dist/
-/web/node_modules/
-/web/*.tsbuildinfo
-*.db
-*.db-shm
-*.db-wal

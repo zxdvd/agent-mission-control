@@ -1,103 +1,262 @@
-# Agent Mission Control
+# Agent Workbench
 
-A self-hosted, monitoring-only console for Codex (primary) and Claude Code. React + TypeScript + Tailwind/Radix shadcn-style UI, Hono on Cloudflare Workers Static Assets, D1, and Cron. No Durable Objects, Redis, Kubernetes, or monitoring daemon.
+个人本地工作台：集中查看项目、任务和需要自己处理的事项。Go 服务端、React/TypeScript 前端、SQLite 数据库放在**同一个仓库**。先验证是否好用，不引入独立部署、队列或多租户系统。
 
-## Data boundary
+## 拿到 ZIP 后怎么用
 
-Only host/task/run/session identifiers and explicitly allowed metadata reach the server. Adapters discard prompt contents, assistant responses, tool inputs, commands, transcript paths, code, and credentials. The console never executes commands, sends replies, or grants approvals. Explicitly supplied task names, summaries, repository names and URLs are metadata you choose to share; avoid secrets in these fields.
+1. 按[安装 / 更新](#安装--更新)启动服务，打开 `http://127.0.0.1:8787`。装发布包不需要 Node 或 Go。
+2. 点「新建工作」，填一件真实小事：要做什么、哪些不做、交什么证据。可选填项目名，已有工作也可在详情改名。保存只是记下工作，不会启动进程。
+3. 如果这台电脑已经登录 Codex CLI，打开该项的「用 Codex 开始这件工作」。在另一个终端进入你选定的工作目录，再手动运行页面给出的命令；默认只读，无需再粘贴一次任务说明。没有 Codex 时，也可以用「如何回报这件工作」记录你或实际执行者已得到的结果。
+4. 回到「总览」看各项目的待定、受阻和待审，点项目可查看对应工作；没填名字的归在「未归类」，不会自动猜项目。再从「待审交付」核对结果；「已查看」不代表验收。确实不再跟进时，可结束本地跟进；要找回它，切到「全部」再搜。
 
-Connection, activity, attention and task outcome are independent. A turn ending is idle, not task completion. No events is unknown/stale, not failure. An agent process exiting is not proof that its task passed. Inferred alerts are visibly different from directly observed requests/errors. Codex notify-only cannot report approvals or the start of a turn; lifecycle hooks provide greater coverage only after explicit local trust.
+回来时，服务还开着就重新打开网页；服务已停就用原安装目录的 `current/run.sh` 启动，继续用原来的库。可以关网页，但执行期间应保持本地服务和 Codex 终端运行。
 
-## Lightweight local adapter install
+若是启动失败，先看原终端；「受阻/待补」汇总已记录的受阻、启动检查和缺证据工作，但不是所有失败都会进看板。若是等你定方向，网页只保存选择，不会自动启动已经退出的执行；查看[继续同一件工作的条件](#显式启动一个新的-codex-执行可选)，不要重复开工。
 
-For Codex App local hooks, see [轻量 curl 安装与验收](INSTALL.zh-CN.md). The fixed-version installer downloads only four Node.js built-in-module adapters, preserves other hooks and existing credentials, and requires local hook review/trust. It does not install Node or a daemon.
+## 当前能力边界
 
-## Local development
+默认从空数据库开始，可以在界面中创建目标、范围和来源明确的本地工作。创建后状态为「尚未开始」，仅生成用于精确回报的工作 / run ID，**不会自动启动 Agent**，也不接管已有 Herdr。操作者可另行显式运行下文的可选 `codex-run`，启动一个全新原生 Codex 执行。现有数据库不会自动删除演示数据；实际使用请另选空白 `-db`。
 
-Requires Node.js 22 or newer and npm.
+合成演示必须显式运行 `-demo -db /tmp/agent-workbench-demo.db`。演示与本地工作使用不同数据库，禁止互相混入。已有 Herdr 仍只读观察，与本地填报分开。
+
+## 开发与公司验证的边界
+
+- 在云端修改源码、测试、构建 ZIP。
+- 公司电脑只接收构建包，运行、测试并反馈；不在公司电脑开发本开源项目或提交 GitHub。
+- 发布包包含前端静态文件的 Go 可执行文件，公司电脑不需要安装 Node 或 Go。
+- 本 demo 不是已有 Agent 的替代运行时；任务状态、人工标记和实际执行结果需要区分，不把 UI 操作当作 Agent 已执行的证据。
+
+## 本地开发（云端）
 
 ```sh
+cd web
 npm ci
-cp .env.example .dev.vars
-npm run db:migrate
 npm run build
-npm run dev:worker
+cd ..
+go test ./...
+go run . -addr 127.0.0.1:8787 -db /tmp/agent-workbench-dev.db
 ```
 
-Open http://127.0.0.1:8787. Local development authorization is deliberately restricted to loopback and must never be exposed through a tunnel or deployed. `.dev.vars` is ignored by Git and not shipped in the source archive. Use the Worker URL above for authentication testing; the Vite development server is a UI-only convenience, not the production authentication boundary.
+打开 `http://127.0.0.1:8787`。前端开发时另开终端运行 `cd web && npm run dev`，API 代理至 8787。Go 编译时要求 `web/dist` 存在。
+
+## 打包
+
+构建机需要 Go、Node/npm 和 zip。
 
 ```sh
-npm run typecheck
-npm run lint
-npm test
-npm run build
+./scripts/package.sh 0.1.0 darwin arm64
+# 也支持 darwin amd64、linux arm64、linux amd64
 ```
 
-D1 persists beneath `.wrangler/state`. Reloading the browser or restarting Wrangler preserves data. To start a fresh test database, stop Wrangler and remove only the disposable local state after confirming you no longer need it. Never use local deletion instructions against production.
+产物在 `dist/`：一个版本化 ZIP，内含安装脚本。默认目标为构建机平台。脚本不上传、不发布、不改版本指针。相同文件名已存在时拒绝覆盖；修复后使用新版本。ZIP 不包含数据库、配置、源码或 node_modules。
 
-## Architecture
+## 安装 / 更新
 
-- `src/`: dashboard, attention inbox, task/run timeline, hosts, filters, rename/archive, dark/light and mobile layouts.
-- `worker/`: authorization, validation, event ingestion, read/write API and cron maintenance.
-- `migrations/`: D1 schema and projection invariants.
-- `adapters/`: Codex and Claude installation, observation and bounded delivery.
-- `scripts/`: repeatable local scenario and integration checks.
-- `tests/`: validation, state, security and adapter regression tests.
+目标电脑只需下载 ZIP，使用自带的 unzip 从包中取出安装脚本后运行，不写入独立的 install.sh。不需要单独下载校验文件或手动校验。**仅对可信的本项目构建包运行安装脚本**；ZIP 自带的完整性检查用于检测损坏，不是签名。
 
-The browser polls every seven seconds. SQLite/D1 is the source of truth; demo scenarios write through the same authenticated ingestion API. Production never substitutes mocked data. Attention read/ignore controls organize notifications only; they cannot approve an agent action. Task archive is reversible and does not delete event history. A new run records a retry; it does not remotely restart an agent.
-
-## Security model
-
-The dashboard uses an independent fixed administrator username and shared password; no Cloudflare Access setup or login is required. A PBKDF2 verifier and independent session signing key live in Worker Secrets. Short-lived secure HttpOnly cookies, server-side session revocation, CSRF checks, and login rate limits protect browser operations. Login HTML is public; monitoring data and dashboard assets require authentication. Missing production secrets fail closed. All people sharing the password have the same administrator privileges; there are no separate readers, per-user audit identities or MFA in this personal MVP.
-
-Agent ingestion has a separate fixed per-host token boundary: `AGENT_TOKENS_JSON` is a Worker Secret containing host IDs, names, and SHA-256 token digests. Each request checks the current configured host/token pair. Host tokens cannot sign in or read dashboard data, and browser sessions cannot ingest events. First valid ingestion creates a monitoring host record. No production credentials are minted by the application. Event validation, bounded requests, rate limiting, deduplication and identity guards remain enforced.
-
-Never deploy `LOCAL_DEV=true`, expose local development through a tunnel, log credentials, or commit secrets. Password/session-key changes invalidate old sessions; logout revokes the current session. Removing a host from configured tokens revokes ingestion after configuration propagation; replacing its digest rotates its token without deleting history.
-
-## Cloudflare deployment and host configuration
-
-Follow [中文 GitHub Actions 部署步骤](DEPLOY.zh-CN.md). The public repository supports protected environments on GitHub Free. CI checks pull requests and main. Production deploys main pushes only after its exact commit passes validation, with a protected production environment, stale-commit guards and a read-only migration-ledger check. A confirmed workflow_dispatch entry remains available; applying migrations is manual and opt-in. Account ID, D1 ID and the chosen `DASHBOARD_USERNAME` are GitHub environment Variables. The deployment workflow writes the username as a non-secret Worker variable (1–64 ASCII letters/digits/underscore/dot/hyphen, beginning with a letter/digit, case-sensitive). `CLOUDFLARE_API_TOKEN` is the environment deployment Secret; `DASHBOARD_PASSWORD_HASH`, `SESSION_SECRET`, and `AGENT_TOKENS_JSON` are separately configured Cloudflare Worker Secrets. They never enter frontend build inputs.
-
-Use `node scripts/password-hash.mjs` to prepare a verifier from a unique password of at least 8 characters (at most 1024 UTF-8 bytes) and `node scripts/token-hash.mjs < /private/path/token` to hash an independently generated high-entropy host token. These utilities do not install or configure credentials for you. Store each plaintext host token only in its corresponding private adapter file. See the deployment guide for exact configuration, rotation and acceptance steps. The old Access configuration and host-registration/revocation API are no longer used.
-
-Cloudflare may charge based on plan and usage. Review account limits before deployment. Cron runs every two minutes; connectivity freshness is also derived during reads. Hooks alone are intermittent: without an explicitly configured OS heartbeat scheduler or foreground wrapper, silence only means last-seen/unknown, not confirmed machine outage.
-
-## Synthetic local integration data
-
-Ordinary local startup above displays an empty dashboard. For isolated synthetic ingestion tests, stop the ordinary Worker and use:
+源码版说明使用 `ARCHIVE_NAME`（实际 ZIP 文件名）和 `RELEASE_VERSION`（发布版本）两个占位符，请按实际构建包替换；ZIP 内的这份说明已自动填入该包的文件名、版本和平台。在下载 ZIP 所在目录运行：
 
 ```sh
-node scripts/local-fixtures.mjs
-npm run db:migrate -- --persist-to .wrangler/test-state
-npm run dev:worker -- --env-file .dev.vars.test --persist-to .wrangler/test-state
-# In another terminal:
-node --env-file=.env.test-hosts scripts/simulate.mjs
-node --env-file=.env.test-hosts scripts/integration.mjs
-node --env-file=.env.test-hosts tests/adapter-live.mjs
+ZIP='./@ARCHIVE_NAME@'
+INSTALLER=$(unzip -p "$ZIP" install.sh) &&
+  sh -c "$INSTALLER" install.sh "$ZIP"
+# 或将上一行替换为以下命令，指定独立的测试目录：
+# sh -c "$INSTALLER" install.sh "$ZIP" "$HOME/agent-workbench-test"
 ```
 
-The fixture generator refuses to overwrite existing files. Its ignored files contain only explicitly synthetic test tokens, never usable production credentials. The `--env-file` option prevents loading ordinary `.dev.vars`; test data uses a separate local database directory. Backend authentication tests exercise password mode independently of this loopback-only integration identity.
+默认安装布局：
 
-## Adapter installation and limitations
+```text
+~/.local/share/agent-workbench/
+  releases/@RELEASE_VERSION@/   # 二进制、运行脚本、版本信息
+  current -> releases/@RELEASE_VERSION@
+  data/workbench.db # 首次运行创建；更新不覆盖
+  config/          # 预留用户配置目录；目前无自动读取的配置文件
+```
 
-See [adapter instructions](adapters/README-adapters.md) for exact isolated install/uninstall commands, Codex notify and opt-in lifecycle-hook setup, and Claude hooks. No installer was run against a real user configuration during development.
+脚本自动检查 ZIP 完整性和目标平台，再安装至新版本目录，最后更新 `current`。不自动启动、不杀进程、不设置开机启动。若旧版本正在运行，先在原终端按 Ctrl-C，然后启动新版：
 
-- Codex legacy notify reports `agent-turn-complete` via argv JSON only. It does not cover turn start, approvals, crashes or exits.
-- Current Codex lifecycle hooks are version/capability-dependent and require `/hooks` review and trust; no trust bypass is installed.
-- Claude `Stop` means the response stopped. It is not a Mission completion signal.
-- Native hook coverage is limited. Pending approval observations cannot be automatically declared resolved without a matching explicit resolution signal.
-- OpenCode is intentionally deferred for this Codex-first MVP. The ingestion contract retains an agent type boundary for future adapters, not a claim of tested OpenCode support.
-- Explicit task completion/failure events are the only terminal evidence. A wrapper's zero exit code is not acceptance of a task.
+```sh
+~/.local/share/agent-workbench/current/run.sh
+# 可选：更换本地端口
+~/.local/share/agent-workbench/current/run.sh -addr 127.0.0.1:8788
+```
 
-## Official interface references
+服务仅监听本机。不要把本 demo 直接暴露到公网。
 
-- [Codex notify](https://learn.chatgpt.com/docs/config-file/config-advanced#notifications)
-- [Codex lifecycle hooks and trust](https://learn.chatgpt.com/docs/hooks)
-- [Codex non-interactive JSON events](https://learn.chatgpt.com/docs/non-interactive-mode)
-- [Claude Code hooks](https://code.claude.com/docs/en/hooks)
+## 回退
 
-Adapters are monitoring integrations, not approval agents. See [VERIFICATION.md](VERIFICATION.md) for what was actually exercised and what requires a real installed CLI/Cloudflare account.
+停止当前进程后，先完整备份 `data/`，再用与旧版兼容的**独立数据库副本**启动旧程序，不必改 `current`。不要让旧版直接写现用数据库，也不要让它写唯一一份备份。下面两项需替换成已安装的旧版本和准备好的副本路径：
 
-## Browser verification script
+```sh
+cd ~/.local/share/agent-workbench
+OLD_VERSION='替换为实际已安装的旧版本号'
+ROLLBACK_DB='/替换为已准备的独立数据库副本/workbench.db'
+test -d "releases/$OLD_VERSION" &&
+  test -f "$ROLLBACK_DB" &&
+  "./releases/$OLD_VERSION/run.sh" -db "$ROLLBACK_DB"
+```
 
-A Playwright script is included but was not executed successfully in the restricted cloud runtime. On a supported development machine, start a fresh local database, run the synthetic simulation above, install the official browser with `npx playwright install chromium`, and run `npm run test:browser`. Alternatively set `CHROMIUM_PATH` to an existing supported browser executable. The script checks desktop/mobile interactions and writes synthetic-data screenshots beneath the OS temporary directory. DOM tests in `npm test` exercise application logic with a synthetic API fixture and are not visual-browser acceptance.
+这是**程序版本回退**，不是数据库回退。旧版能打开数据库，也不表示能无损写入：在隔离实测中，v0.1.22 能读取 v0.1.26 的任务，但用旧版标记交付已查看后，上一份交付证据快照被移除；当前交付和原有回报事件仍保留。更新不删除旧包、不覆盖 data/config；不要运行新旧两个实例共享同一数据库。
+
+## 安装链路自测
+
+```sh
+./scripts/test-install.sh
+./scripts/test-package.sh
+```
+
+用临时目录和假二进制验证仅凭 ZIP 安装、更新、数据/配置保留、重复版本拒绝、回退，以及损坏、缺文件、无效版本和平台不符时安全拒绝，不访问公司电脑。
+
+打包测试用替身构建工具生成临时 ZIP，验证包内说明跟随实际版本和平台，并直接执行其中的安装示例；不会构建或发布正式版本。
+
+
+
+## 手动记录这次交付已查看
+
+本地事项详情可复制直达链接，仍指向同一地址、同一工作台；它不复制数据、不提供访问权限。打开链接只定位事项，不改筛选、不写入、不启动或标记查看。已结项的事项也可定位。
+
+本地工作的当前 `ready` 回报有可审阅证据时，详情的证据下方可点「标记本次已查看」。这只记录你已经看过**当前 run 的这一条精确交付回报**，显示「已查看本次交付 · 非验收」及记录时间，并从待审列表和数量中移出；在办、全部、证据与原始回报历史仍保留，生命周期仍是 `ready`。不是验收通过、独立核验、完成，也不授权合并或部署。演示、缺证据或其他状态没有此操作。
+
+保存绑定当前 `reports:ready` 或 `reports:completed` 的精确事件 ID；旧页面不能把后来变更的证据标为已看。详情打开时固定本次可标记的回报；自动刷新发现新交付时会停止提供标记按钮，须关掉详情再重新打开核对，不会暗中把旧按钮切到新回报。对同一条回报重复保存不刷新时间；新的正式交付回报会再次待审，即使摘要相同。刷新或重启后保留记录。当前只保存最近一次查看标记，不引入身份、审计流程、自动查看或后台执行。
+
+## 按需查看上一份交付证据
+
+同一项本地工作、同一个 run 中，新的有效 `ready` 回报替换当前有效 `ready` 时，会先保留上一份的有限快照。详情里的「上一份交付证据 · 历史」默认折叠，显示原回报 ID、时间、填报来源、有限摘要和旧证据；它不会与当前证据合并，也不参与当前待审、已查看、在办或结束跟进的判断。三份连续交付只保留第二份作为第三份的上一份，不提供完整历史或恢复操作；旧数据库不会补造缺失内容。
+
+上限为 8 项完整证据和 32 KiB 快照，摘要最多 500 字符；界面明确显示保留/原有数量、未保留项数及摘要截短情况。不截断单条证据后冒充完整条目。若加入快照会使该任务超出原有 1 MiB 单项读回上限，直接舍弃可选快照，不阻止新回报。 预算允许时会显示「上一份超出保存上限，未保留」的固定原因；若连这条小提示也放不下，则一并省略，绝不为历史提示突破原读回上限。回执不会替换快照，空/无效 `ready` 不会借历史变成就绪；显式清空证据数组也清除可选快照。这不是敏感内容清除的备份、恢复或完整审计功能，来源仍只是填报而非独立核验。
+
+## 结束或恢复本地跟进
+
+已经查看的本地 `ready` 交付，可直接在列表对该件工作选「结束本地跟进」，也可在详情操作。这不是自动隐藏所有已查看项：只有明确点过、且仍对应同一 run 和同一条已查看回报的记录，才从默认「在办」及数量中移出。「全部」仍保留它，显示「已结束跟进 · 本地」，可在详情恢复；恢复保留原查看标记，不重新执行任务。
+
+结束与恢复共用一条本地列表标记，记录服务器时间，不修改生命周期 `ready`、执行时间、证据或原始事件历史。它不代表完成、通过、验收或独立核验，不取消仍在运行的进程，也不授权合并、部署。操作沿用详情打开时固定的精确回报；旧回报、未查看交付、其他状态和演示均不能操作。重复同状态操作不刷新时间，过时的反向操作会被拒绝。新的正式交付回报会自动重新出现在「在办」和「待审」；回执本身不会使已有标记失效。
+
+## 回报一件本地工作（无自动执行）
+
+先在界面「新建工作」填写目标和边界。详情会给出该工作 / run 的精确标识。由实际执行者或你手工回报：
+
+```sh
+~/.local/share/agent-workbench/current/agent-workbench report -addr 127.0.0.1:8787 \
+  -task work-替换成实际ID -run work-替换成实际ID-run-1 \
+  -kind ready -message '最小修复完成，测试证据待审' \
+  -origin '本人手工转录隔离执行者报告；非工作台派发' \
+  -excerpt '复现：7 项测试 1 失败。修复并增加回归：8 项通过。'
+```
+
+上面的命令使用默认安装目录内的二进制，不要求加入 PATH。若安装时指定了目录，请把 `~/.local/share/agent-workbench` 换成实际安装目录。
+
+需要本人选择时，向同一个精确工作 / run 记录问题和选项：
+
+```sh
+~/.local/share/agent-workbench/current/agent-workbench report -addr 127.0.0.1:8787 \
+  -task work-替换成实际ID -run work-替换成实际ID-run-1 \
+  -kind needs_decision -message '修复范围需要确认' \
+  -origin '本人手工转录隔离执行者报告；非工作台派发' \
+  -question '先推进哪个方向？' \
+  -option '只做最小修复' -option '先补充证据，不改代码'
+```
+
+`needs_decision` 必须提供非空 `-question`，并重复 `-option` 至少两次。选项去除首尾空白后必须非空、互不相同，每项最多 120 个字符；其他 kind 不接受这两个参数。成功输出 `Saved ... report`，包含精确 task、run、保存后的 status 和 report 事件 ID。问题保存后可在界面查看并选择，**不自动投递选择、不启动或恢复 Agent**。
+
+执行者可用同一个安装版二进制，单次只读查询这个精确工作 / run 的回答：
+
+```sh
+~/.local/share/agent-workbench/current/agent-workbench decision -addr 127.0.0.1:8787 \
+  -task work-替换成实际ID -run work-替换成实际ID-run-1
+```
+
+未回答时输出 `Waiting for answer` 和当前问题、选项；已回答时输出 `Recorded answer`、原问题、回答以及精确 task / run / command ID、原始 command status。若没有当前问题，则显示本 run 最近记录的回答；从未有回答则输出 `No decision`。新问题不会误用旧问题的回答，其他 run 的回答不会显示，旧 run 查询会报错。默认命令只读一次本地快照，不轮询、不发送指令、不标记已送达或已确认、不启动或恢复 Agent；实际后续工作仍由原执行者在获准的环境里完成。
+
+需要执行者在前台等待一个已存在的精确问题时，可显式选择有时限的只读轮询：
+
+```sh
+~/.local/share/agent-workbench/current/agent-workbench decision -addr 127.0.0.1:8787 \
+  -task work-替换成实际ID -run work-替换成实际ID-run-1 \
+  -wait 30s -question '先推进哪个方向？'
+```
+
+`-wait` 最多 5 分钟，必须提供原问题的精确文本；每 250 毫秒只读查询一次，同一总时限覆盖请求、响应读取和间隔等待。仅在该问题仍处于 `needs_decision` 且恰有一条同 task / run / question、状态为 `recorded` 的有效答案时成功输出；不会拿已清除问题的历史答案充当等待成功。第一次读到的选项会固定下来，后续读到问题、选项、run 或状态改变即报错停止；无效响应、网络错误也停止，不自动重试。超时明确报 `decision wait timed out`，不输出答案、不继续后台轮询。问题和选项只是标签，不作为代码执行。
+
+每个 run 只应有一个明确负责的消费者。实际消费者读取并接受精确 command 后，先显式回报一次回执；只有本次回执成功保存后，才可在原有授权范围内开展后续工作：
+
+```sh
+~/.local/share/agent-workbench/current/agent-workbench report -addr 127.0.0.1:8787 \
+  -task work-替换成实际ID -run work-替换成实际ID-run-1 \
+  -kind receipt -command work-替换成实际ID-c1 \
+  -origin '实际消费者读取并接受该选择；未声明执行完成'
+```
+
+`receipt` 必须提供精确 `-command` 和来源 `-origin`，`-message` 可省略；不接受问题、选项或证据摘录。未知 command、其他 run 和重复回执会被拒绝且不新增事件。成功输出保留 `Saved receipt report` 及 task / run / status / report，并增加 `command` 和 `command_status=acknowledged`。这只说明本地保存了填报者提供的回执，不证明 Agent 已继续或完成；只读 `decision` 永远不会自动发送回执。等待模式遇到 `acknowledged` 即报错，提示检查先前消费者的结果，不重复交出答案；普通快照仍可查看原有 `acknowledged` 状态。回执失败、结果未知或消费者在回执后中断时，应先核实原执行与证据，不自动重试后续动作。本协议不保证恰好一次执行，也不是多消费者调度或锁。工作台不生成执行流程，后续进展和证据仍须消费者实际完成后另行回报。
+
+同一 run 内，已回答的问题不能沿用原措辞重新提问，即使选项相同也会拒绝；需要新决定时请使用不同的问题措辞。只读查询也会拒绝与当前选项不符的旧答案，不把它冒充当前选择。
+
+上述 `report` / `decision` CLI 仅向显式 loopback IP 上的工作台发送这些文本，不读证据文件、不启动执行、不跟随重定向、不用代理。`-run` 不能省略，旧 / 其他 run 会被拒绝。`progress` 是填报进展，`ready` 是证据待审；`failed` 记录受阻。新收到的 `completed` 仍要求本次提供可审证据，保留原回报事件种类，但返回状态为 `ready`（待审），不会直接把工作放到历史。已有 `done` 记录保持原状。缺证据时可记录一次补交请求，请操作者回原执行补证据；工作台不自动通知或启动 Agent。来源与原始创建来源分开保留；不得输入凭据或未授权的公司数据。
+
+若投递结果未知，先刷新该工作核实，不要盲目重试。当前没有自动采集、重试队列、通用受管执行、项目管理或任意文件读取；下文单次可选 Codex 桥接另行明确说明执行范围。
+
+## 显式启动一个新的 Codex 执行（可选）
+
+默认服务和网页仍不启动 Agent。只有操作者主动运行 `codex-run`，才会启动 PATH 上已安装的 Codex CLI。需要已获准的任务范围、已配置可用的 Codex，以及一个**尚未开始的本地工作**。不读取或接管既有会话，不使用 `--last`，不通过 Herdr 发指令；演示工作不能启动。一个 run 只能领取一次，两个同时启动的进程也只能有一个通过本地事务领取。
+
+在网页新建一项真实本地工作后，把详情中的精确 task / run 标识填入下面命令。`-cwd` 必须显式指定现有目录；默认沿用 Codex 的 Git 工作区检查，不自动绕过。建议用 stdin 给出实际任务，避免把任务文本放进进程参数：
+
+```sh
+~/.local/share/agent-workbench/current/agent-workbench codex-run \
+  -addr 127.0.0.1:8787 \
+  -task work-替换成实际ID -run work-替换成实际ID-run-1 \
+  -cwd /替换成已获准的工作目录 <<'TASK'
+在这个目录内只读检查 README，给出一项有实际摘录支持的改进建议。
+需要决定时先停下，给出一个明确问题和短选项；不要提前做依赖该选择的工作。
+TASK
+```
+
+若网页已保存的标题、目标和默认交付要求就是本次任务说明，可显式选用单次命令，无需再粘贴标准输入：
+
+```sh
+~/.local/share/agent-workbench/current/agent-workbench codex-run -use-task-brief \
+  -addr 127.0.0.1:8787 -task work-替换成实际ID -run work-替换成实际ID-run-1 \
+  -cwd "$PWD"
+```
+
+先手动进入并核对已获准的工作目录。该模式只读取精确新建本地工作/当前 run 的标题、目标及网页同一份默认交付要求，不读标准输入，不推断目录，不扩大权限或自动启动。读取有界且仅访问指定 loopback；读取失败、旧 run、演示、已领取或不完整记录均不领取或启动。领取事务会再次逐字核对读到的标题和目标；期间变更会拒绝，不消耗领取。这个比较条件不会保存进任务或事件。任务文字仍只作为数据经 stdin 交给原生子进程，不进入 shell 或参数。`-use-task-brief` 不能与 `-prompt`（包括显式空值）或 `-continue` 混用。缺少 Codex 时仍只按原规则尝试记录固定启动检查通知。
+
+要自定义本次输入，继续使用原来的 stdin 命令，也支持 `-prompt '任务文本'`，两种方式最终都只通过 stdin 传给原生子进程，不拼接 shell 命令。任务最多 64 KiB。默认明确使用 `-sandbox read-only`；只有操作者显式提供 `-sandbox workspace-write` 才启用该沙箱。没有 full-access、绕过审批、忽略规则、附加目录或认证设置选项；沿用已安装 Codex 的用户配置、项目规则与正常权限策略。沙箱选项不是对任务之外行为的授权。
+
+流程仅限一个新原生线程、一次决定循环：
+
+初次命令通过参数、任务文本及目录检查后，若明确未在 PATH 找到可执行的 Codex，只会在尚未动过的精确本地工作上限时尝试保存一次固定类别与服务器时间，不保存 PATH、提示词或完整错误。网页显示「上次启动检查未通过」和手动检查、重试提示；仍为尚未开始，同一 run 未被领取。显示写入失败不改变终端原错误，不重试、不安装；其他检查或启动错误不在此通知范围内，`-continue` 也不写入。操作者修好自己的终端环境后可显式重跑原命令，真正领取时在同一事务清除旧通知。
+
+1. 工作台事务领取这个精确 task / run，记为正在处理。领取本身**不证明启动成功**，也不会自动重置。
+2. 通过 `codex exec --json --output-schema` 启动，捕获这次 JSONL 的原生 UUID。只解释成功退出、`turn.completed` 前最终完成的结构化 Agent 消息；工具输出不作为结果。 首轮在同一 JSONL 中读到有效 `thread.started` UUID 和第一个 `turn.started` 后，会单次、异步、最多 500 毫秒地尝试保存独立启动观察。详情显示服务器记录时间，明确是 CLI 填报、未独立核验的历史事实，不代表当前在线、已续跑或已交付。只在精确 run 仍保留原始领取状态时保存，不增加事件或改变进展、问题与绑定；后续失败或交付保留已保存的事实。显示写入失败、超时或迟于正式回报时可丢失，不重试，也不影响原生执行和正式回报；没有标记不等于没有启动。旧记录和续跑不补写这个首轮标记，不保存原生输出全文。
+3. 若结果是 `needs_decision`，把原问题、选项和本次原生 UUID 的续跑绑定**在同一事务保存**到同一工作。绑定只用于这个新本地 run 的第一个问题，包含精确 task / run / question / options、原沙箱及规范化 cwd 的 SHA-256 指纹，不保存绝对目录。操作者在网页选择时同时提交所见问题和选项；旧页面不能把重叠选项误投到新问题。命令只等待该精确问题、选项、run 和唯一有效答案。
+4. 只在精确 command 回执已保存并验证后，才调用一次 `codex exec resume 捕获的UUID -`。选择以 JSON 数据经 stdin 传入，不作为命令或政策覆盖；必须再次观察同一个 UUID 和成功完成的轮次。回执本身不算继续成功。
+5. 直接交付或同线程续跑交付都必须给出实际声明的行内证据，才回报 `ready`。原生 UUID 随来源和证据保留；`ready` 仍是模型声明、待操作者审阅，不是独立验证，也不自动标记完成。
+
+若正常结束的原生轮次未能完成关键步骤（例如必须运行的测试一项也没启动），可明确回报 `blocked`，附实际原因和最多 8 条诊断摘录。如果约定目标本身就是诊断，完成诊断仍可回报 `ready`。受阻记录成功保存后，启动命令仍以非零结束，表示目标未完成；它不自动继续、补报或重试。未知写入结果仍先核查。
+
+想直接在网页审一个小补丁，可在任务说明里明确要求「将完整统一 diff 作为一条内联证据」，另写实际跑过的检查和退出结果；只要摘要不足以核对原文。单条摘录上限为 2000 字符：放不下就标明未附全文，继续在有权访问的原处核对。工作台不会读取或传输本地附件。
+
+`-wait` 默认 2 分钟、最多 5 分钟；`-timeout` 覆盖原生执行和等待全过程，默认 10 分钟、最多 30 分钟。命令只在前台运行，支持 Ctrl-C；Linux/macOS 使用独立子进程组及有界管道清理，不保留后台轮询。超时、第二次要求决定、无证据、JSONL 不兼容、错误线程或失败进程都会明确停止，不自动重试或换线程。
+
+### 前台等待结束后，显式继续同一个问题
+
+若问题已保存，但 `-wait`、总 `-timeout` 或 Ctrl-C 在回执前结束，**保留问题、已记录的答案和绑定，不追加失败回报**。稍后在网页选择也会保留，不会自动执行。要让原线程消费这个尚未确认的选择，请在原目录显式运行：
+
+```sh
+~/.local/share/agent-workbench/current/agent-workbench codex-run -continue \
+  -task 'work-这里填真实标识' -run '这里填该工作的真实run标识' \
+  -cwd "$PWD"
+```
+
+`-continue` 不读取新任务或 stdin，不接受任意会话 UUID，也不重新领取或启动新原生线程。目录通过绝对路径及符号链接规范化后比较指纹；目录内容和 Git HEAD 不在指纹内。它仍有相同的前台等待和总期限。沙箱默认复用初次明确选定的值，终端和详情会显示该值；若显式传 `-sandbox`，必须与原值完全一致，不能升级或降级。
+
+续跑前重新核实当前精确问题、选项、绑定和唯一未确认答案，并在回执事务内再次比较；只有一个消费者能获得回执并续跑一次。工作 / run / cwd 不符、元数据缺失或失效、问题或选项已变、重复答案、已确认答案、回执被其他消费者抢先取得或响应不明确，均不调用原生续跑、不重试，也不发失败回报覆盖其他消费者的结果。普通手工回报会使续跑绑定失效，不能重新附加到旧会话。
+
+首次原生执行确知失败，或取得已验证回执的消费者续跑失败时，才尝试一次受阻回报。若任意写入的响应不明确，写入可能已提交，命令立即退出，**不追加失败回报去覆盖已提交的状态、不重发、不继续原生执行**。回执已保存后，无论原生续跑失败、进程崩溃还是结果未知，都不能再次用 `-continue` 消费；先检查同一工作、command 和原生线程。没有回执后崩溃恢复、后台服务或重试队列。
+
+### 首轮开始前受阻：在同一件工作下准备新尝试
+
+只在当前工作已领取又立即记录失败、没有首轮启动观察、决定或交付证据时，详情可能出现此操作。没有启动观察**不代表原执行一定停止**。须实际核实旧命令及相关执行已经停止，再明确确认并保存。新尝试沿用工作和目标，保留旧失败，产生独立 run；旧 run 不能向新 run 回报。它不启动或恢复 Codex、不复用旧线程、不修改权限。仍须由你核对目录并手动运行新命令。保存结果不明确时先刷新核实，不要重发。
+
+云端回归使用假 Codex 子进程与真实 HTTP 服务，验证等待到期保留、晚到选择沿相同 UUID 续跑一次、精确问题及沙箱 / cwd 绑定、并发回执与歧义回执停止、重复续跑拒绝和 ready 证据。它不是原生模型兼容性或真实代码交付证明；原生集成仍须在允许的环境验收。
