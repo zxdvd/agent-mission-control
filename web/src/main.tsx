@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
-import { taskDetailBrief } from './task-brief';
+import { taskDetailBrief, type TaskDetailBrief } from './task-brief';
 import { codeDelivery } from './code-delivery';
 import { HerdrPanel } from './herdr-panel';
 import { CreateWork } from './create-work';
@@ -12,6 +12,10 @@ import { goalWorkLinks, taskNoticeKey, hiddenLocalWork, pinLocalVisibility, loca
 const stamp=(v:string)=>{const d=new Date(v);return Number.isNaN(d.valueOf())?'尚未观察':d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})};
 async function api<T>(path:string,body?:unknown,signal?:AbortSignal):Promise<T>{const res=await fetch('/api'+path,{signal,cache:'no-store',...(body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{})});if(!res.ok){const err=await res.json().catch(()=>({error:`请求失败 (${res.status})`}));throw new Error(err.error||'请求失败')}return res.json()}
 function Badge({task}:{task:Task}){const [label,tone]=taskBadge(task);return <span className={'badge '+tone}>{label}</span>}
+function BackgroundText({brief}:{brief:TaskDetailBrief}){
+ const [expanded,setExpanded]=useState(false),contentID=useId();
+ return <div className="brief-background"><p id={contentID}>{expanded?brief.background:brief.backgroundPreview??brief.background}</p>{brief.backgroundPreview!==undefined&&<button type="button" className="background-toggle" aria-expanded={expanded} aria-controls={contentID} onClick={()=>setExpanded(value=>!value)}>{expanded?'收起背景':'展开完整背景'}</button>}</div>;
+}
 function ReviewEvidence({task}:{task:Task}){
  const brief=taskDetailBrief(task);
  return <div className="review-evidence review-focus"><strong>本次审阅</strong><p>{brief.reviewFocus||'未写明审阅重点'}</p></div>;
@@ -154,12 +158,14 @@ function App(){
  const isGroupView=view.startsWith('project-name:')||view.startsWith('legacy-project:')||view==='source-demo';
  const createProjectName=creationProjectName(view);
  const detailBrief=active?taskDetailBrief(active):undefined;
- const primaryAction=!!active&&(needsDecision(active)||!!currentReadyReportID(active)&&!reviewedDelivery(active)||active.status==='needs_evidence'&&active.follow_up_count<1);
- const actionSection=active&&<section className={primaryAction?'brief-section detail-action-required':'brief-section'} aria-labelledby="detail-actions-heading"><h3 id="detail-actions-heading">需要我做的</h3>
+ const unviewedDelivery=!!active&&!!currentReadyReportID(active)&&!reviewedDelivery(active);
+ const primaryAction=!!active&&(needsDecision(active)||unviewedDelivery&&!!detailBrief?.reviewFocus||!!detailBrief?.operatorNote||active.status==='needs_evidence'&&active.follow_up_count<1);
+ const reviewOnly=unviewedDelivery&&!primaryAction;
+ const actionSection=active&&<section className={primaryAction?'brief-section detail-action-required':'brief-section'} aria-labelledby="detail-actions-heading"><h3 id="detail-actions-heading">{reviewOnly?'交付待查看':'需要我做的'}</h3>
   {active.decision&&needsDecision(active)?<div className="decision"><p>{active.decision.question}</p><fieldset disabled={busy}><legend>选择本次决定</legend>{active.decision.options.map(option=><label key={option} className={answer===option?'option checked':'option'}><input type="radio" name="answer" checked={answer===option} onChange={()=>{answerDrafts.current.set(decisionKey,option);setAnswer(option)}}/><span>{option}</span></label>)}<button className="primary" disabled={!answer.trim()} onClick={()=>void mutate('decisions')}>{busy?'保存中…':'保存决定'}</button></fieldset><small>只记录决定，回执与新进展另行确认。</small></div>:null}
-  {currentReadyReportID(active)&&!reviewedDelivery(active)&&<div className="brief-review"><p className="brief-review-label">审阅重点{detailBrief?.reviewFocus?'（填报）':''}</p><p>{detailBrief?.reviewFocus||'未写明审阅重点'}</p>{codeDelivery(active).links.length>0&&<button type="button" className="jump-delivery" onClick={()=>{const target=document.getElementById('detail-delivery');target?.scrollIntoView({block:'nearest'});target?.focus({preventScroll:true})}}>查看交付物 ↓</button>}{deliveryReviewRequest(active,reviewTarget)?<button type="button" disabled={busy} onClick={()=>void mutate('review-delivery')}>{busy?'保存中…':'标记本次已查看'}</button>:<p className="muted" role="status">交付已更新，请重新打开核对。</p>}<small>已查看不代表验收。</small></div>}
+  {unviewedDelivery&&<div className="brief-review">{detailBrief?.reviewFocus?<><p className="brief-review-label">审阅重点（填报）</p><p>{detailBrief.reviewFocus}</p></>:<p className="muted">未记录需要你判断的事项。</p>}{codeDelivery(active).links.length>0&&<button type="button" className="jump-delivery" onClick={()=>{const target=document.getElementById('detail-delivery');target?.scrollIntoView({block:'nearest'});target?.focus({preventScroll:true})}}>查看交付物 ↓</button>}{deliveryReviewRequest(active,reviewTarget)?<button type="button" disabled={busy} onClick={()=>void mutate('review-delivery')}>{busy?'保存中…':'标记本次已查看'}</button>:<p className="muted" role="status">交付已更新，请重新打开核对。</p>}<small>已查看不代表验收。</small></div>}
   {active.status==='needs_evidence'&&<div className="brief-review"><p>{active.follow_up_count>=1?'补交要求已记录，仍待有效证据。':'交付证据待补齐。'}</p>{active.follow_up_count<1&&<button type="button" disabled={busy} onClick={()=>void mutate('follow-up')}>{busy?'保存中…':'记录一次补交要求'}</button>}</div>}
-  {!primaryAction&&active.status!=='needs_evidence'&&(answered(active)?<p>{pending(active)?'决定已记录，待回执。':'决定已有回执，等待新进展。'}</p>:reviewedDelivery(active)?<p>本次交付已查看。</p>:!detailBrief?.operatorNote?<p className="muted">未记录待处理动作</p>:null)}
+  {!primaryAction&&!reviewOnly&&active.status!=='needs_evidence'&&(answered(active)?<p>{pending(active)?'决定已记录，待回执。':'决定已有回执，等待新进展。'}</p>:reviewedDelivery(active)?<p>本次交付已查看。</p>:!detailBrief?.operatorNote?<p className="muted">未记录待处理动作</p>:null)}
   {detailBrief?.operatorNote&&<p className="reported-note"><small>填报</small>{detailBrief.operatorNote}</p>}
  </section>;
  return <div className="shell"><aside className="sidebar"><div className="brand"><span className="brand-mark">↗</span> 工作台</div><nav aria-label="主导航">{[['overview','总览','◫'],['attention','需要我决定','◇'],['decisions','已留的决定','↳']].map(([id,label,icon])=><button key={id} className={view===id?'nav active':'nav'} onClick={()=>{setView(id);setFilter('active')}}><span>{icon}</span>{label}{id==='attention'&&needs.length>0&&<b>{needs.length}</b>}</button>)}</nav><p className="nav-label">项目</p>{groups.map(group=><button className={view===group.key?'nav active':'nav'} key={group.key} onClick={()=>showProject(group.key)}><span className="project-dot"/>{group.name}{group.kind==='demo'?' · 演示':group.kind==='legacy'?' · 历史':''}</button>)}<div className="sidebar-foot">本地记录</div></aside>
@@ -175,7 +181,7 @@ function App(){
  <h2 id="detail-title">{active.title}</h2><div className="detail-meta">{taskProjectLabel(active)&&<span>{taskProjectLabel(active)}</span>}<span>更新于 {stamp(active.updated_at)}</span><WorkItemLink key={active.id} task={active}/></div>
  <div className="detail-brief" tabIndex={-1}>
  {primaryAction&&actionSection}
- <section className="brief-section"><h3>背景 / 解决什么</h3><p>{detailBrief.background||'未记录背景'}</p>{detailBrief.outcome&&<p className="brief-outcome"><small>结果（填报）</small>{detailBrief.outcome}</p>}</section>
+ <section className="brief-section"><h3>背景 / 解决什么</h3><BackgroundText key={JSON.stringify([active.id,active.run_id,active.goal])} brief={detailBrief}/>{detailBrief.outcome&&<p className="brief-outcome"><small>结果（填报）</small>{detailBrief.outcome}</p>}</section>
  <section className="brief-section"><h3>如何解决</h3><p className={detailBrief.approach?'':'muted'}>{detailBrief.approach||'未单独记录解决方式'}</p></section>
  <section className="brief-section"><h3>验证了哪些</h3>{detailBrief.verification.length?<ul>{detailBrief.verification.map((item,index)=><li key={index}>{item}</li>)}</ul>:<p className="muted">未单独记录验证结果</p>}</section>
  {!primaryAction&&actionSection}

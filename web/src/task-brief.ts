@@ -2,6 +2,7 @@ import { currentReadyReportID, type Task } from './model.ts';
 
 export type TaskDetailBrief={
  background:string;
+ backgroundPreview?:string;
  outcome?:string;
  approach?:string;
  verification:string[];
@@ -25,7 +26,11 @@ const reviewLabels=/^(?:review focus|review request|审阅重点|审核重点|�
 // This reads the current recorded report only. Evidence retained by a progress
 // or failed report without an explicit evidence array is not a fresh delivery.
 export function taskDetailBrief(task:Task):TaskDetailBrief {
- const brief:TaskDetailBrief={background:short(task.goal,220)||'未记录',verification:[]};
+ // Keep the original goal intact; only the optional collapsed preview is bounded.
+ const background=typeof task.goal==='string'&&task.goal.trim()?task.goal:'未记录';
+ const preview=Array.from(background).slice(0,220).join('').split('\n').slice(0,4).join('\n');
+ const brief:TaskDetailBrief={background,verification:[]};
+ if(preview.length<background.length)brief.backgroundPreview=preview.trimEnd()+'…';
  const events=task.events||[];
  let event:Task['events'][number]|undefined;
  for(let i=events.length-1;i>=0;i--){
@@ -34,7 +39,7 @@ export function taskDetailBrief(task:Task):TaskDetailBrief {
  }
  if(!event||event.message!==task.summary)return brief;
  const outcome=short(event.message,200);
- if(outcome&&outcome!==brief.background)brief.outcome=outcome;
+ if(outcome&&outcome!==short(task.goal,220))brief.outcome=outcome;
  if(!currentReadyReportID(task))return brief;
  for(const evidence of task.evidence||[]){
   const label=typeof evidence.label==='string'?evidence.label.trim():'';

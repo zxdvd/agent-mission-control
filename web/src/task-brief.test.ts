@@ -30,7 +30,8 @@ test('brief does not use stale evidence, stale run, receipts or placeholder summ
 test('brief normalizes whitespace, bounds Unicode, limits and deduplicates verification',()=>{
  const segment='验🙂'.repeat(150);
  const brief=taskDetailBrief(ready({goal:' A\n B ',evidence:[{label:'验证结果',excerpt:segment},{label:'Test results',excerpt:segment},{label:'Verification',excerpt:'另验了一项'},{label:'测试',excerpt:'不要占据首屏'}]}));
- assert.equal(brief.background,'A B');
+ assert.equal(brief.background,' A\n B ');
+ assert.equal(brief.backgroundPreview,undefined);
  assert.equal(Array.from(brief.verification[0]).length,181);
  assert.deepEqual(brief.verification.slice(1),['另验了一项']);
 });
@@ -38,4 +39,39 @@ test('brief normalizes whitespace, bounds Unicode, limits and deduplicates verif
 test('not-started ready badge or report title alone cannot generate a review request',()=>{
  const task=ready({evidence:[{label:'Review focus',url:'https://example.test/evidence'}]});
  assert.equal(taskDetailBrief(task).reviewFocus,undefined);
+});
+
+
+test('short background stays complete without an expansion preview, including Unicode and line breaks',()=>{
+ for(const goal of ['目标', ' A\n B ', '一\r\n二\r\n三\r\n四', '🙂'.repeat(220)]){
+  const brief=taskDetailBrief(ready({goal}));
+  assert.equal(brief.background,goal);
+  assert.equal(brief.backgroundPreview,undefined);
+ }
+});
+
+test('long background keeps the exact original goal and bounds only its Unicode-safe preview',()=>{
+ for(const goal of ['验🙂'.repeat(150)+'\n末尾目标', 'https://example.test/'+'x'.repeat(1000), '🙂'.repeat(221)]){
+  const task=ready({goal}),before=JSON.stringify(task),brief=taskDetailBrief(task);
+  assert.equal(brief.background,goal);
+  assert.equal(brief.backgroundPreview,Array.from(goal).slice(0,220).join('')+'…');
+  assert.equal(Array.from(brief.backgroundPreview!).length,221);
+  assert.equal(JSON.stringify(task),before);
+ }
+});
+
+test('many short lines get an expandable compact preview without losing original whitespace',()=>{
+ for(const separator of ['\n','\r\n']){
+  const goal=['第一行','  第二行','','第四行','第五行'].join(separator),brief=taskDetailBrief(ready({goal}));
+  assert.equal(brief.background,goal);
+  assert.equal(brief.backgroundPreview,['第一行','  第二行','','第四行'].join(separator)+'…');
+ }
+});
+
+test('missing background remains a plain placeholder without a disclosure',()=>{
+ for(const goal of ['', '  \n \t', undefined]){
+  const brief=taskDetailBrief(ready({goal}));
+  assert.equal(brief.background,'未记录');
+  assert.equal(brief.backgroundPreview,undefined);
+ }
 });
