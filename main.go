@@ -69,6 +69,7 @@ func decodeNewAttempt(body io.Reader) (store.NewAttemptInput, error) {
 
 func handler(s *store.Store) http.Handler {
 	m := http.NewServeMux()
+	registerLocalVisibility(m, s)
 	write := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(v)
@@ -122,8 +123,9 @@ func handler(s *store.Store) http.Handler {
 		}
 		t, err := s.Create(in)
 		if err != nil {
-			w.WriteHeader(400)
-			write(w, map[string]string{"error": err.Error()})
+			code, message := safeMutationError(err)
+			w.WriteHeader(code)
+			write(w, map[string]string{"error": message})
 			return
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -149,19 +151,13 @@ func handler(s *store.Store) http.Handler {
 	m.HandleFunc("POST /api/tasks/{id}/new-attempt", func(w http.ResponseWriter, r *http.Request) {
 		in, decodeErr := decodeNewAttempt(http.MaxBytesReader(w, r.Body, 1024))
 		if decodeErr != nil {
-			http.Error(w, "requires only run_id, failed_event_id and confirm_stopped:true; verify the old local and external processes have stopped", 400)
+			writeMutationError(w, "requires only run_id, failed_event_id and confirm_stopped:true; verify the old local and external processes have stopped", 400)
 			return
 		}
 		task, err := s.NewAttempt(r.PathValue("id"), in)
 		if err != nil {
-			code := 400
-			if errors.Is(err, store.ErrConflict) {
-				code = 409
-			}
-			if errors.Is(err, sql.ErrNoRows) {
-				code = 404
-			}
-			http.Error(w, err.Error(), code)
+			code, message := safeMutationError(err)
+			writeMutationError(w, message, code)
 			return
 		}
 		write(w, task)
@@ -174,19 +170,13 @@ func handler(s *store.Store) http.Handler {
 		dec.DisallowUnknownFields()
 		var trailing any
 		if dec.Decode(&in) != nil || in.ProjectName == nil || dec.Decode(&trailing) != io.EOF {
-			http.Error(w, "project_name must be an explicit string; use empty string to clear", 400)
+			writeMutationError(w, "project_name must be an explicit string; use empty string to clear", 400)
 			return
 		}
 		task, err := s.SetProjectName(r.PathValue("id"), *in.ProjectName)
 		if err != nil {
-			code := 400
-			if errors.Is(err, store.ErrConflict) {
-				code = 409
-			}
-			if errors.Is(err, sql.ErrNoRows) {
-				code = 404
-			}
-			http.Error(w, err.Error(), code)
+			code, message := safeMutationError(err)
+			writeMutationError(w, message, code)
 			return
 		}
 		write(w, task)
@@ -201,7 +191,7 @@ func handler(s *store.Store) http.Handler {
 		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 		dec.DisallowUnknownFields()
 		if dec.Decode(&in) != nil {
-			http.Error(w, "invalid JSON", 400)
+			writeMutationError(w, "invalid JSON", 400)
 			return
 		}
 		task, err := s.SetLocalFollowUp(r.PathValue("id"), in.RunID, in.ReportEventID, in.Operation, in.ExpectedAt)
@@ -213,7 +203,7 @@ func handler(s *store.Store) http.Handler {
 			if errors.Is(err, sql.ErrNoRows) {
 				code = 404
 			}
-			http.Error(w, "local follow-up requires the unchanged current viewed report; refresh before acting", code)
+			writeMutationError(w, "local follow-up requires the unchanged current viewed report; refresh before acting", code)
 			return
 		}
 		write(w, task)
@@ -226,7 +216,7 @@ func handler(s *store.Store) http.Handler {
 		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 		dec.DisallowUnknownFields()
 		if dec.Decode(&in) != nil {
-			http.Error(w, "invalid JSON", 400)
+			writeMutationError(w, "invalid JSON", 400)
 			return
 		}
 		task, err := s.ReviewDelivery(r.PathValue("id"), in.RunID, in.ReportEventID)
@@ -238,7 +228,7 @@ func handler(s *store.Store) http.Handler {
 			if errors.Is(err, sql.ErrNoRows) {
 				code = 404
 			}
-			http.Error(w, "current delivery changed or is not reviewable; refresh before marking seen", code)
+			writeMutationError(w, "current delivery changed or is not reviewable; refresh before marking seen", code)
 			return
 		}
 		write(w, task)
@@ -301,15 +291,9 @@ func handler(s *store.Store) http.Handler {
 		}
 		t, e := s.Apply(r.PathValue("id"), r.PathValue("action"), in)
 		if e != nil {
-			code := 400
-			if errors.Is(e, store.ErrConflict) {
-				code = 409
-			}
-			if errors.Is(e, sql.ErrNoRows) {
-				code = 404
-			}
+			code, message := safeMutationError(e)
 			w.WriteHeader(code)
-			write(w, map[string]string{"error": e.Error()})
+			write(w, map[string]string{"error": message})
 			return
 		}
 		write(w, t)

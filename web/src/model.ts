@@ -9,7 +9,9 @@ export type DeliveryReview={run_id:string;report_event_id:string;reviewed_at:str
 export type LocalFollowUp={run_id:string;report_event_id:string;state:'ended'|'open';recorded_at:string};
 export type PreviousDeliveryEvidence={run_id:string;report_event_id:string;reported_at:string;origin:string;summary:string;summary_truncated?:boolean;total_count:number;evidence:Evidence[]};
 export type PreviousEvidenceUnretained={run_id:string;report_event_id:string;reason:'task_size_limit'};
-export type Task={project_name?:string;previous_evidence_unretained?:PreviousEvidenceUnretained|null;previous_delivery_evidence?:PreviousDeliveryEvidence|null;local_follow_up?:LocalFollowUp|null;delivery_review?:DeliveryReview|null;codex_launch_notice?:CodexLaunchNotice|null;codex_start?:CodexStartObservation|null;codex_binding?:CodexBinding|null;source?:string;origin?:string;id:string;project_id:string;title:string;goal:string;status:string;run_id:string;summary:string;updated_at:string;observed_at:string;evidence:Evidence[];decision:{question:string;options:string[]}|null;follow_up_count:number;events:{origin?:string;id:string;kind:string;message:string;run_id:string;created_at:string}[];commands:Command[]};
+export type LocalVisibility={revision?:string;run_id:string;state:'hidden'|'visible';recorded_at:string;last_report_event_id:string;launch_notice_recorded_at:string};
+export type PreviousBlockedAttempt={run_id:string;report_event_id:string;codex_start:CodexStartObservation;evidence:Evidence[]};
+export type Task={local_visibility?:LocalVisibility|null;previous_blocked_attempts?:PreviousBlockedAttempt[];project_name?:string;previous_evidence_unretained?:PreviousEvidenceUnretained|null;previous_delivery_evidence?:PreviousDeliveryEvidence|null;local_follow_up?:LocalFollowUp|null;delivery_review?:DeliveryReview|null;codex_launch_notice?:CodexLaunchNotice|null;codex_start?:CodexStartObservation|null;codex_binding?:CodexBinding|null;source?:string;origin?:string;id:string;project_id:string;title:string;goal:string;status:string;run_id:string;summary:string;updated_at:string;observed_at:string;evidence:Evidence[];decision:{question:string;options:string[]}|null;follow_up_count:number;events:{origin?:string;id:string;kind:string;message:string;run_id:string;created_at:string}[];commands:Command[]};
 export const states:Record<string,[string,string]>={not_started:['尚未开始 · 等执行回报','gray'],working:['进行中','green'],needs_decision:['需要你的决定','amber'],needs_evidence:['交付待补齐','amber'],ready:['证据已就绪 · 待审','green'],done:['已完成','gray'],unknown:['当前状态未知','gray'],failed:['执行遇到问题','amber'],blocked:['执行受阻','amber'],paused:['已暂停','gray']};
 export const pending=(task:Task)=>task.commands?.some(c=>c.status==='recorded');
 export const answered=(task:Task)=>!!task.decision&&task.commands?.some(c=>c.kind==='decision'&&c.run_id===task.run_id&&c.question===task.decision?.question);
@@ -28,7 +30,7 @@ export type WorkFilter='active'|'review'|'issues'|'all';
 // Review is only the reporter's ready state, not a new lifecycle or human decision.
 // This bucket combines reported stop states and historical fresh-work preflight notices only.
 export const workIssueLabel='受阻/待补';
-export const hasWorkIssue=(task:Task)=>task.status==='blocked'||task.status==='failed'||task.status==='needs_evidence'||!!codexLaunchNotice(task);
+export const hasWorkIssue=(task:Task)=>!hiddenLocalWork(task)&&(task.status==='blocked'||task.status==='failed'||task.status==='needs_evidence'||!!codexLaunchNotice(task));
 export const matchesWorkFilter=(task:Task,filter:WorkFilter)=>filter==='review'?pendingDeliveryReview(task):filter==='issues'?hasWorkIssue(task):filter==='active'?activeWork(task):true;
 export function reviewEvidencePreview(task:Task):{count:number;excerpt?:string;origin?:string}|undefined {
  if(task.status!=='ready')return;
@@ -41,6 +43,7 @@ export function reviewEvidencePreview(task:Task):{count:number;excerpt?:string;o
 }
 
 export function taskBadge(task:Task):[string,string] {
+ if(hiddenLocalWork(task))return ['已隐藏 · 本地','gray'];
  if(endedLocalFollowUp(task))return ['已结束跟进 · 本地','gray'];
  if(reviewedDelivery(task))return ['已查看本次交付 · 非验收','gray'];
  if(task.status==='needs_decision'&&answered(task)){
@@ -154,7 +157,7 @@ export function localFollowUpMarker(task:Task):LocalFollowUp|undefined {
  return marker;
 }
 export const endedLocalFollowUp=(task:Task)=>localFollowUpMarker(task)?.state==='ended';
-export const activeWork=(task:Task)=>task.status!=='done'&&!endedLocalFollowUp(task);
+export const activeWork=(task:Task)=>task.status!=='done'&&!endedLocalFollowUp(task)&&!hiddenLocalWork(task);
 export function localFollowUpRequest(task:Task,target:DeliveryReviewTarget|undefined,operation:'end'|'resume'):{run_id:string;report_event_id:string;operation:'end'|'resume';expected_recorded_at:string}|undefined {
  const pictured=deliveryReviewRequest(task,target);
  if(!pictured||!reviewedDelivery(task))return;
@@ -250,11 +253,17 @@ export function hiddenActiveSearchCount(tasks:Task[],view:string,filter:WorkFilt
 // This is only a display eligibility guard. The backend rechecks the transaction.
 export type NewAttemptTarget={task_id:string;run_id:string;failed_event_id:string};
 export function pinNewAttempt(task:Task):NewAttemptTarget|undefined {
- if(!canNameProject(task)||task.status!=='blocked'||!task.id||!task.run_id||task.codex_launch_notice||task.codex_start||task.codex_binding||task.decision||task.previous_delivery_evidence||task.previous_evidence_unretained||task.delivery_review||task.local_follow_up||task.follow_up_count!==0||!Array.isArray(task.commands)||task.commands.length||!Array.isArray(task.evidence)||task.evidence.length||!Array.isArray(task.events))return;
+ if(!canNameProject(task)||task.status!=='blocked'||!task.id||!task.run_id||task.codex_launch_notice||task.codex_binding||task.decision||task.previous_delivery_evidence||task.previous_evidence_unretained||task.delivery_review||task.local_follow_up||task.follow_up_count!==0||!Array.isArray(task.commands)||task.commands.length||!Array.isArray(task.evidence)||!Array.isArray(task.events))return;
  const safeKinds=['local_created','local_retry_created','codex-start:','reports:failed'];
  if(task.events.some(event=>!safeKinds.includes(event.kind)))return;
  const current=task.events.filter(event=>event.run_id===task.run_id);
- if(current.length!==3||!['local_created','local_retry_created'].includes(current[0].kind)||current[1].kind!=='codex-start:'||current[2].kind!=='reports:failed'||current[2].origin!=='Codex CLI bridge; no successful delivery claimed'||!current[2].id||task.events.at(-1)!==current[2])return;
+ if(current.length!==3||!['local_created','local_retry_created'].includes(current[0].kind)||current[1].kind!=='codex-start:'||current[2].kind!=='reports:failed'||!current[2].id||task.events.at(-1)!==current[2])return;
+ const start=codexStartObservation(task);
+ if(task.codex_start){
+  if(!start)return;
+  const origin=`Codex CLI native thread ${start.native_thread_id}; model-declared blocked diagnosis and evidence, not independent verification`,report=current[2];
+  if(report.origin!==origin||task.summary!==report.message||report.created_at!==task.observed_at||!Number.isFinite(Date.parse(report.created_at))||Date.parse(start.observed_at)>Date.parse(report.created_at)||!task.summary.trim()||Array.from(task.summary).length>2000||task.evidence.length>8||task.evidence.some(entry=>!entry.label?.trim()||Array.from(entry.label).length>160||!entry.excerpt?.trim()||Array.from(entry.excerpt).length>2000||!!entry.url||entry.origin!==origin)||task.previous_blocked_attempts?.some(previous=>previous.run_id===task.run_id))return;
+ }else if(task.evidence.length||current[2].origin!=='Codex CLI bridge; no successful delivery claimed')return;
  return {task_id:task.id,run_id:task.run_id,failed_event_id:current[2].id};
 }
 export function newAttemptRequest(task:Task,target:NewAttemptTarget|undefined,confirmedStopped:boolean):{run_id:string;failed_event_id:string;confirm_stopped:true}|undefined {
@@ -306,4 +315,59 @@ export function creationProjectName(view:string):string|undefined {
 }
 export function projectNameForNewDraft(draft:{title:string;goal:string;projectName:string;touched:boolean},scopedName:string):string {
  return draft.touched||draft.title.trim()||draft.goal.trim()?draft.projectName:scopedName;
+}
+
+// Linkify only exact same-board local item URLs. Every other goal character
+// remains inert text, including external URLs and action/query lookalikes.
+export function sameBoardWorkLink(raw:string,location:Pick<Location,'origin'|'pathname'>):string|undefined {
+ if(!raw.startsWith('#work=')&&!/^https?:\/\//i.test(raw))return;
+ try {
+  const base=new URL(location.origin);base.pathname=location.pathname;
+  const url=new URL(raw,base);
+  if(url.origin!==base.origin||url.pathname!==base.pathname||url.search||url.username||url.password)return;
+  return parseWorkFragment(url.hash);
+ }catch{return}
+}
+export function goalWorkLinks(goal:string,location:Pick<Location,'origin'|'pathname'>):{text:string;taskID?:string}[] {
+ const parts:{text:string;taskID?:string}[]=[];
+ const pattern=/(?:https?:\/\/[^\s<>"，。；！？（）]+|#work=[^\s<>"，。；！？（）]+)/gi;
+ let start=0;
+ for(const match of goal.matchAll(pattern)){
+  const index=match.index!;
+  if(index>start)parts.push({text:goal.slice(start,index)});
+  parts.push({text:match[0],taskID:sameBoardWorkLink(match[0],location)});start=index+match[0].length;
+ }
+ if(start<goal.length)parts.push({text:goal.slice(start)});
+ return parts;
+}
+// Tie transient acknowledgments to the exact pictured snapshot. A newer report
+// or attempt must never keep displaying an old local-success banner.
+export const taskNoticeKey=(task:Task)=>JSON.stringify([task.id,task.run_id,task.status,task.updated_at,task.events?.at(-1)?.id]);
+
+export function lastSubstantiveReportID(task:Task):string {
+ for(let i=(task.events||[]).length-1;i>=0;i--){const event=task.events[i];if(event.run_id===task.run_id&&event.kind.startsWith('reports:')&&event.kind!=='reports:receipt')return event.id;}
+ return '';
+}
+export function localVisibilityMarker(task:Task):LocalVisibility|undefined {
+ const marker=task.local_visibility;
+ if(!canNameProject(task)||task.decision||!['not_started','blocked'].includes(task.status)||!marker||!!marker.revision||marker.run_id!==task.run_id||!['hidden','visible'].includes(marker.state)||marker.last_report_event_id!==lastSubstantiveReportID(task)||marker.launch_notice_recorded_at!==(task.codex_launch_notice?.recorded_at||'')||!marker.recorded_at||Number.isNaN(Date.parse(marker.recorded_at)))return;
+ return marker;
+}
+export const hiddenLocalWork=(task:Task)=>localVisibilityMarker(task)?.state==='hidden';
+export type LocalVisibilityTarget={task_id:string;run_id:string;status:string;last_report_event_id:string;expected_recorded_at:string;launch_notice_recorded_at:string};
+export function pinLocalVisibility(task:Task):LocalVisibilityTarget|undefined {
+ if(!canNameProject(task)||task.decision||!['not_started','blocked'].includes(task.status))return;
+ return {task_id:task.id,run_id:task.run_id,status:task.status,last_report_event_id:lastSubstantiveReportID(task),launch_notice_recorded_at:task.codex_launch_notice?.recorded_at||'',expected_recorded_at:localVisibilityMarker(task)?.recorded_at||''};
+}
+export function localVisibilityRequest(task:Task,target:LocalVisibilityTarget|undefined,operation:'hide'|'restore'):{run_id:string;operation:'hide'|'restore';expected_recorded_at:string;last_report_event_id:string;launch_notice_recorded_at:string}|undefined {
+ if(!target||JSON.stringify(pinLocalVisibility(task))!==JSON.stringify(target))return;
+ return {run_id:target.run_id,operation,expected_recorded_at:target.expected_recorded_at,last_report_event_id:target.last_report_event_id,launch_notice_recorded_at:target.launch_notice_recorded_at};
+}
+export function previousBlockedAttempts(task:Task):PreviousBlockedAttempt[] {
+ if(!canNameProject(task))return [];
+ return (task.previous_blocked_attempts||[]).filter(previous=>{
+  const report=task.events?.find(event=>event.id===previous.report_event_id&&event.run_id===previous.run_id&&event.kind==='reports:failed');
+  const start=codexStartObservation({...task,run_id:previous.run_id,codex_start:previous.codex_start});
+  return previous.run_id!==task.run_id&&!!start&&!!report&&report.origin===`Codex CLI native thread ${start.native_thread_id}; model-declared blocked diagnosis and evidence, not independent verification`&&Array.isArray(previous.evidence);
+ });
 }

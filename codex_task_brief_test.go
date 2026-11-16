@@ -54,6 +54,9 @@ func TestCodexTaskBriefExactOptInReadyAndDecision(t *testing.T) {
 				t.Fatal(calls[0].Prompt)
 			}
 			for _, call := range calls {
+				if !strings.Contains(call.Prompt, codexSummaryGuidance) {
+					t.Fatal("explicit task and same-thread continuation must share summary guidance")
+				}
 				if call.Cwd != x.Cwd || !reflect.DeepEqual(call.Args[:5], []string{"exec", "--sandbox", "read-only", "--cd", x.Cwd}) {
 					t.Fatal(call)
 				}

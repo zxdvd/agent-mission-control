@@ -172,6 +172,8 @@ type PreviousEvidenceUnretained struct {
 }
 
 type Task struct {
+	LocalVisibility            *LocalVisibility            `json:"local_visibility,omitempty"`
+	PreviousBlockedAttempts    []PreviousBlockedAttempt    `json:"previous_blocked_attempts,omitempty"`
 	PreviousEvidenceUnretained *PreviousEvidenceUnretained `json:"previous_evidence_unretained,omitempty"`
 	PreviousDeliveryEvidence   *PreviousDeliveryEvidence   `json:"previous_delivery_evidence,omitempty"`
 	LocalFollowUp              *LocalFollowUp              `json:"local_follow_up,omitempty"`
@@ -576,10 +578,13 @@ type NewAttemptInput struct {
 	ConfirmStopped bool   `json:"confirm_stopped"`
 }
 
-// RetryableFailedEventID recognizes only an initial claim followed directly by
-// failure, with no observed native start or meaningful execution/review state.
-// Previous safe pre-start failures may remain as immutable event history.
+// RetryableFailedEventID recognizes the original safe pre-start failure or the
+// narrow first native blocked result with an exact saved start observation.
+// Neither eligibility path establishes liveness or replaces explicit stop consent.
 func RetryableFailedEventID(t Task) string {
+	if eventID := retryableNativeBlockedEventID(t); eventID != "" {
+		return eventID
+	}
 	if t.Source != "local" || t.ProjectID != "local" || t.Status != "blocked" || t.RunID == "" || t.CodexLaunchNotice != nil || t.CodexStart != nil || t.CodexBinding != nil || t.Decision != nil || len(t.Evidence) != 0 || len(t.Commands) != 0 || t.FollowUpCount != 0 || t.PreviousDeliveryEvidence != nil || t.PreviousEvidenceUnretained != nil || t.DeliveryReview != nil || t.LocalFollowUp != nil {
 		return ""
 	}
@@ -617,7 +622,7 @@ func (s *Store) NewAttempt(id string, in NewAttemptInput) (Task, error) {
 		return t, err
 	}
 	if t.ID != id || in.RunID != t.RunID || in.FailedEventID != RetryableFailedEventID(t) {
-		return t, fmt.Errorf("%w: requires the unchanged local pre-start failure and an explicit stopped-process confirmation; refresh before creating an attempt", ErrConflict)
+		return t, fmt.Errorf("%w: requires the unchanged eligible local failure and an explicit stopped-process confirmation; refresh before creating an attempt", ErrConflict)
 	}
 	var random [16]byte
 	if _, err = rand.Read(random[:]); err != nil {
@@ -636,6 +641,14 @@ func (s *Store) NewAttempt(id string, in NewAttemptInput) (Task, error) {
 			return t, errors.New("new attempt event identifier collision; change not saved")
 		}
 	}
+	if retryableNativeBlockedEventID(t) != "" {
+		// Preserve the entire diagnostic evidence before clearing current state.
+		// This archive is mandatory, never a size-trimmed optional snapshot.
+		t.PreviousBlockedAttempts = append(t.PreviousBlockedAttempts, PreviousBlockedAttempt{RunID: t.RunID, ReportEventID: in.FailedEventID, CodexStart: *t.CodexStart, Evidence: t.Evidence})
+		t.CodexStart = nil
+		t.Evidence = []Evidence{}
+	}
+	t.LocalVisibility = nil
 	t.RunID, t.Status, t.UpdatedAt, t.ObservedAt = run, "not_started", stamp, ""
 	t.Summary = "已手动建立新尝试，尚未领取或启动；原失败记录保留。"
 	t.Events = append(t.Events, Event{ID: eventID, Kind: "local_retry_created", Message: "用户明确确认原本地及外部执行已停止，手动建立新尝试；未启动执行。", RunID: run, CreatedAt: stamp, Origin: "local human retry; stopped explicitly confirmed"})
@@ -670,6 +683,8 @@ func (s *Store) NoteCodexMissing(id, run string) (CodexLaunchNotice, error) {
 	}
 	notice := CodexLaunchNotice{Category: "missing_executable", RecordedAt: now()}
 	t.CodexLaunchNotice = &notice
+	// A new current-run startup diagnostic is new information, not hidden history.
+	t.LocalVisibility = nil
 	encoded, err := marshalTask(&t)
 	if err != nil {
 		return CodexLaunchNotice{}, err
@@ -889,6 +904,9 @@ func (s *Store) Apply(id, action string, in Input) (Task, error) {
 			default:
 				return t, errors.New("unsupported report kind")
 			}
+			// New substantive same-run information must return hidden work to view.
+			// Receipt-only bookkeeping above deliberately preserves the marker.
+			t.LocalVisibility = nil
 			t.Summary = in.Message
 			if in.Evidence != nil {
 				t.Evidence = in.Evidence

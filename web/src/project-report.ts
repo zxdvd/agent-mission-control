@@ -1,4 +1,4 @@
-import { canNameProject, taskProjectView, type WorkProjectGroup } from './model.ts';
+import { canNameProject, hiddenLocalWork, taskProjectView, type WorkProjectGroup } from './model.ts';
 
 export type ProjectReportPreview={title:string;excerpt:string;reportedAt:string};
 const substantiveKinds=new Set(['reports:progress','reports:ready','reports:completed','reports:failed']);
@@ -23,7 +23,7 @@ export function latestProjectReport(group:WorkProjectGroup):ProjectReportPreview
  if(group.kind!=='local')return;
  let latest:{time:string;taskID:string;eventIndex:number;preview:ProjectReportPreview}|undefined;
  for(const task of group.items){
-  if(!canNameProject(task)||taskProjectView(task)!==group.key)continue;
+  if(!canNameProject(task)||hiddenLocalWork(task)||taskProjectView(task)!==group.key)continue;
   for(const [eventIndex,event] of (task.events||[]).entries()){
    if(event.run_id!==task.run_id||!substantiveKinds.has(event.kind)||!event.message?.trim())continue;
    const time=reportTimeKey(event.created_at);
