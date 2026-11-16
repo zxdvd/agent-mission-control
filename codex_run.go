@@ -28,7 +28,7 @@ import (
 // All fields are required so the installed Codex structured-output contract is
 // unambiguous. The application separately enforces the branch invariants.
 // Keep first-turn and same-thread continuation summaries useful in the project preview.
-const codexSummaryGuidance = "For ready or blocked, lead the summary with the strongest observed result or the main blocker in the first 100 characters. State actual test counts or exit status if known, then the next action if useful. Do not infer or assign a next-action owner unless the operator explicitly named one."
+const codexSummaryGuidance = "For ready or blocked, lead the summary with the strongest observed result or the main blocker in the first 100 characters. State actual test counts or exit status if known, then the next action if useful. Do not infer or assign a next-action owner unless the operator explicitly named one. For a ready code delivery, include the actual MR, CR or PR URL in an evidence excerpt if it is part of this delivery. If the delivery is only a local patch, use the evidence label Local patch and describe the actual patch and validation. Never invent a link or publish anything just to provide evidence."
 
 const codexResultSchema = `{"type":"object","additionalProperties":false,"required":["status","summary","question","options","evidence"],"properties":{"status":{"type":"string","enum":["needs_decision","ready","blocked"]},"summary":{"type":"string"},"question":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"evidence":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["label","excerpt"],"properties":{"label":{"type":"string"},"excerpt":{"type":"string"}}}}}}`
 
