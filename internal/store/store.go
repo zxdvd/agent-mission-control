@@ -260,6 +260,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, e
 	}
+	if e = s.initManaged(); e != nil {
+		db.Close()
+		return nil, e
+	}
 	return s, nil
 }
 func (s *Store) Close() error { return s.db.Close() }
@@ -291,6 +295,10 @@ type CreateInput struct {
 }
 
 func (s *Store) Create(in CreateInput) (Task, error) {
+	return s.CreateWithManagedImage(in, nil)
+}
+
+func (s *Store) CreateWithManagedImage(in CreateInput, image *ManagedImage) (Task, error) {
 	items, err := s.List()
 	if err != nil {
 		return Task{}, err
@@ -322,8 +330,25 @@ func (s *Store) Create(in CreateInput) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
-	_, err = s.db.Exec(`INSERT INTO tasks VALUES(?,?)`, t.ID, string(b))
-	return t, err
+	tx, err := s.beginManagedMutation()
+	if err != nil {
+		return Task{}, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`INSERT INTO tasks VALUES(?,?)`, t.ID, string(b)); err != nil {
+		return Task{}, err
+	}
+	managed, err := json.Marshal(ManagedState{RunID: t.RunID, HasInitial: image != nil})
+	if err != nil {
+		return Task{}, err
+	}
+	if _, err = tx.Exec(`INSERT INTO managed_tasks(task_id,data) VALUES(?,?)`, t.ID, string(managed)); err != nil {
+		return Task{}, err
+	}
+	if err = writeManagedImage(tx, t.ID, "initial", image); err != nil {
+		return Task{}, err
+	}
+	return t, tx.Commit()
 }
 
 const maxProjectNameLength = 60
@@ -750,6 +775,15 @@ func (s *Store) Apply(id, action string, in Input) (Task, error) {
 	}
 	if in.RunID == "" || in.RunID != t.RunID {
 		return t, fmt.Errorf("%w: execution changed; refresh before acting", ErrConflict)
+	}
+	if action == "reports" || action == "codex-start" {
+		managed, err := hasManagedOwner(tx, id, t.RunID)
+		if err != nil {
+			return t, err
+		}
+		if managed {
+			return t, fmt.Errorf("%w: 此事项只能由原卡已启动的 Codex 回报。", ErrConflict)
+		}
 	}
 	if in.ExpectedTaskBrief != nil && action != "codex-start" {
 		return t, errors.New("task brief expectation is only valid for a fresh Codex claim")

@@ -67,10 +67,13 @@ func decodeNewAttempt(body io.Reader) (store.NewAttemptInput, error) {
 	return in, nil
 }
 
-func handler(s *store.Store) http.Handler {
+func handler(s *store.Store) http.Handler { return handlerWithManaged(s, nil) }
+
+func handlerWithManaged(s *store.Store, worker *managedWorker) http.Handler {
 	m := http.NewServeMux()
 	registerLocalVisibility(m, s)
 	registerFollowUps(m, s)
+	registerManaged(m, s, worker)
 	write := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(v)
@@ -114,15 +117,30 @@ func handler(s *store.Store) http.Handler {
 		write(w, projects)
 	})
 	m.HandleFunc("POST /api/tasks", func(w http.ResponseWriter, r *http.Request) {
-		var in store.CreateInput
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		var in struct {
+			store.CreateInput
+			Image *managedImageInput `json:"image"`
+		}
+		// Preserve the existing API for non-browser text consumers; screenshots
+		// carry more sensitive content and are a local-browser-only flow.
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, managedBodyLimit))
 		dec.DisallowUnknownFields()
-		if err := dec.Decode(&in); err != nil {
+		var trailing any
+		if err := dec.Decode(&in); err != nil || dec.Decode(&trailing) != io.EOF {
 			w.WriteHeader(400)
 			write(w, map[string]string{"error": "invalid JSON"})
 			return
 		}
-		t, err := s.Create(in)
+		if in.Image != nil && !managedBrowser(r) {
+			writeMutationError(w, "same-origin local browser required for screenshot", http.StatusForbidden)
+			return
+		}
+		img, err := validatedManagedImage(in.Image)
+		if err != nil {
+			writeMutationError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		t, err := s.CreateWithManagedImage(in.CreateInput, img)
 		if err != nil {
 			code, message := safeMutationError(err)
 			w.WriteHeader(code)
@@ -361,6 +379,9 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8787", "loopback listen address")
 	db := flag.String("db", "workbench.db", "SQLite database file")
 	demo := flag.Bool("demo", false, "explicitly seed synthetic demo tasks in this database")
+	managedHome := flag.String("managed-codex-home", "", "dedicated canonical Codex home for explicit card actions")
+	managedCwd := flag.String("managed-cwd", "", "dedicated canonical read-only working directory for explicit card actions")
+	ackManaged := flag.Bool("ack-vetted-runner", false, "operator confirms managed Codex home, project rules, extensions and connectors are suited to this scope")
 	flag.Parse()
 	if !loopback(*addr) {
 		log.Fatal("only an explicit loopback IP is supported")
@@ -375,6 +396,16 @@ func main() {
 			log.Fatal(e)
 		}
 	}
-	fmt.Printf("Local work records: http://%s (no Agent execution; synthetic seed: %t)\n", strings.TrimSpace(*addr), *demo)
-	log.Fatal(http.ListenAndServe(*addr, handler(s)))
+	var worker *managedWorker
+	if *managedHome != "" || *managedCwd != "" || *ackManaged {
+		if *demo {
+			log.Fatal("managed Codex cannot be enabled with demo data")
+		}
+		worker, e = newManagedWorker(*managedHome, *managedCwd, *ackManaged)
+		if e != nil {
+			log.Fatal(e)
+		}
+	}
+	fmt.Printf("Local work records: http://%s (managed Agent only after explicit action: %t; synthetic seed: %t)\n", strings.TrimSpace(*addr), worker != nil, *demo)
+	log.Fatal(http.ListenAndServe(*addr, handlerWithManaged(s, worker)))
 }

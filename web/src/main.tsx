@@ -6,7 +6,7 @@ import { codeDelivery } from './code-delivery';
 import { HerdrPanel } from './herdr-panel';
 import { CreateWork } from './create-work';
 import { latestProjectReport } from './project-report';
-import { ReportFollowUps } from './report-follow-ups-panel';
+import { CodexCardControls, ManagedCodexProvider, ManagedTaskScreenshot, type ManagedDraft } from './managed-codex-panel';
 import { snapshotRefresh, watchVisibleRefresh, type SnapshotFreshness } from './refresh';
 
 import { goalWorkLinks, taskNoticeKey, hiddenLocalWork, pinLocalVisibility, localVisibilityRequest, type LocalVisibilityTarget, previousBlockedAttempts, type Project, type Task, creationProjectName, parseWorkFragment, workItemLink, workLinkIntent, pinNewAttempt, newAttemptRequest, type NewAttemptTarget, taskProjectLabel, taskProjectView, workProjectGroups, projectWorkCounts, taskBadge, pending, answered, needsDecision, evidenceLink, evidenceOrigin, evidenceExcerpt, taskOrigin, type WorkFilter, matchesWorkFilter, matchesWorkView, hiddenActiveSearchCount, matchesTaskSearch, hasWorkIssue, workIssueLabel, activeWork, endedLocalFollowUp, localFollowUpRequest, pinRowFollowUp, rowFollowUpRequest, pendingDeliveryReview, pinDeliveryReview, deliveryReviewRequest, type DeliveryReviewTarget, currentReadyReportID, reviewedDelivery, previousDeliveryEvidence, previousEvidenceUnretained, codexStartObservation, taskSummary, codexLaunchNotice } from './model';
@@ -60,6 +60,7 @@ function PreviousBlocked({task}:{task:Task}){
 function App(){
  const [projects,setProjects]=useState<Project[]>([]),[tasks,setTasks]=useState<Task[]>([]),[loading,setLoading]=useState(true),[error,setError]=useState(''),[selected,setSelected]=useState<string|null>(null),[view,setView]=useState('overview'),[filter,setFilter]=useState<WorkFilter>('active'),[query,setQuery]=useState(''),[busy,setBusy]=useState(false),[notice,setNotice]=useState(''),[answer,setAnswer]=useState('');
  const taskSnapshots=useRef<Task[]>(tasks);taskSnapshots.current=tasks;
+ const managedDrafts=useRef(new Map<string,ManagedDraft>());
  const answerDrafts=useRef(new Map<string,string>()),selectedRef=useRef<string|null>(null);
  const noticeScope=useRef('');
  const [visibilityTarget,setVisibilityTarget]=useState<LocalVisibilityTarget|undefined>();
@@ -180,15 +181,17 @@ function App(){
  {active&&detailBrief&&<div className="overlay" onClick={e=>{if(e.target===e.currentTarget&&!busy)closeDetail()}}><section className="detail" role="dialog" aria-modal="true" aria-labelledby="detail-title">
  <div className="detail-top"><Badge task={active}/><button ref={closeRef} aria-label="关闭事项详情" onClick={()=>closeDetail()} disabled={busy}>✕</button></div>
  <h2 id="detail-title">{active.title}</h2><div className="detail-meta">{taskProjectLabel(active)&&<span>{taskProjectLabel(active)}</span>}<span>更新于 {stamp(active.updated_at)}</span><WorkItemLink key={active.id} task={active}/></div>
+ <ManagedCodexProvider key={JSON.stringify([active.id,active.run_id])} task={active} drafts={managedDrafts.current}>
  <div className="detail-brief" tabIndex={-1}>
  {primaryAction&&actionSection}
- <section className="brief-section"><h3>背景 / 解决什么</h3><BackgroundText key={JSON.stringify([active.id,active.run_id,active.goal])} brief={detailBrief}/>{detailBrief.outcome&&<p className="brief-outcome"><small>结果（填报）</small>{detailBrief.outcome}</p>}</section>
+ <section className="brief-section"><h3>背景 / 解决什么</h3><BackgroundText key={JSON.stringify([active.id,active.run_id,active.goal])} brief={detailBrief}/><ManagedTaskScreenshot taskID={active.id}/>{detailBrief.outcome&&<p className="brief-outcome"><small>结果（填报）</small>{detailBrief.outcome}</p>}</section>
  <section className="brief-section"><h3>如何解决</h3><p className={detailBrief.approach?'':'muted'}>{detailBrief.approach||'未单独记录解决方式'}</p></section>
  <section className="brief-section"><h3>验证了哪些</h3>{detailBrief.verification.length?<ul>{detailBrief.verification.map((item,index)=><li key={index}>{item}</li>)}</ul>:<p className="muted">未单独记录验证结果</p>}</section>
  {!primaryAction&&actionSection}
  <CodeDelivery task={active}/>
- <ReportFollowUps key={active.id} task={active}/>
+ <CodexCardControls task={active}/>
  </div>
+ </ManagedCodexProvider>
  {notice&&noticeScope.current===taskNoticeKey(active)&&<div className="notice" role="status">{notice}</div>}
  {(pinLocalVisibility(active)||currentReadyReportID(active)&&reviewedDelivery(active)||active.status==='blocked'&&(attemptTarget||pinNewAttempt(active)))&&<details className="detail-admin"><summary>记录操作</summary>
  {pinLocalVisibility(active)&&<div className="record-action"><p>{hiddenLocalWork(active)?'已收起，仅影响本地显示。':'只影响本地显示，可在「全部」恢复。'}</p>{localVisibilityRequest(active,visibilityTarget,hiddenLocalWork(active)?'restore':'hide')?<button type="button" disabled={busy} onClick={()=>void changeVisibility(active,visibilityTarget,hiddenLocalWork(active)?'restore':'hide')}>{hiddenLocalWork(active)?'恢复事项显示':'收起事项'}</button>:<p role="status">记录已更新，请重新打开核对。</p>}</div>}

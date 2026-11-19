@@ -343,6 +343,10 @@ func validateFollowUpCodexHome(path string, ack bool, cwd string) (string, error
 // not mutate this process's environment, read/copy sessions, or pass user data
 // as executable flags. Keep user/managed rules and approval controls intact.
 func runFollowUpCodexTurn(ctx context.Context, binary, cwd, home string, args []string, prompt string) (codexResult, string, error) {
+	return runDedicatedCodexTurn(ctx, binary, cwd, home, args, prompt, "")
+}
+
+func runDedicatedCodexTurn(ctx context.Context, binary, cwd, home string, args []string, prompt, wantThread string) (codexResult, string, error) {
 	var result codexResult
 	cmdCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -370,7 +374,7 @@ func runFollowUpCodexTurn(ctx context.Context, binary, cwd, home string, args []
 	}
 	stopDrain := context.AfterFunc(cmdCtx, func() { stdout.Close() })
 	defer stopDrain()
-	id, final, parseErr := parseCodexJSONL(stdout, "")
+	id, final, parseErr := parseCodexJSONL(stdout, wantThread)
 	if parseErr != nil {
 		cancel()
 	}

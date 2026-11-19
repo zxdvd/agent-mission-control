@@ -167,6 +167,11 @@ func (s *Store) SubmitFollowUp(taskID string, in FollowUpInput) (FollowUp, error
 	if err = json.Unmarshal([]byte(data), &task); err != nil {
 		return FollowUp{}, err
 	}
+	if managed, checkErr := hasManagedOwner(tx, taskID, task.RunID); checkErr != nil {
+		return FollowUp{}, checkErr
+	} else if managed {
+		return FollowUp{}, fmt.Errorf("%w: use the original managed Codex thread on this card", ErrConflict)
+	}
 	if task.ID != taskID || task.ProjectID != "local" || in.RunID != task.RunID || in.ReportEventID != CurrentReadyReportID(task) {
 		return FollowUp{}, fmt.Errorf("%w: follow-up requires the unchanged current local evidence-backed ready report", ErrConflict)
 	}
