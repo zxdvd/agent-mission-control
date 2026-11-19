@@ -48,3 +48,17 @@ main{padding-top:24px}.sidebar{padding-top:22px}.sidebar nav{margin-top:22px}.na
 .detail-raw .raw-summary{font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
 
 .brief-background{min-width:0;max-width:100%}.brief-background p{white-space:pre-wrap;overflow-wrap:anywhere}.background-toggle{margin-top:7px;padding:5px 9px;font-size:12px}.background-toggle:focus-visible{outline:2px solid var(--green);outline-offset:3px}
+
+.report-follow-ups summary { cursor: pointer; font-weight: 600; }
+.report-follow-ups summary small { font-weight: normal; color: var(--muted, #65716c); }
+.report-follow-ups fieldset { margin: 12px 0; border: 1px solid #d7ded9; border-radius: 8px; padding: 10px; }
+.report-follow-ups fieldset label { display: inline-flex; gap: 5px; margin-right: 16px; align-items: center; }
+.follow-up-message { display: grid; gap: 6px; margin-bottom: 6px; }
+.follow-up-message textarea { width: 100%; box-sizing: border-box; resize: vertical; padding: 10px; font: inherit; border: 1px solid #bbc8bf; border-radius: 8px; }
+.follow-up-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.follow-up-history { margin-top: 14px; }
+.follow-up-history h4 { display: inline-block; margin: 0 12px 8px 0; }
+.follow-up-record { padding: 12px 0; border-bottom: 1px solid #d7ded9; }
+.follow-up-record small { display: block; overflow-wrap: anywhere; }
+.follow-up-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.report-follow-ups code { overflow-wrap: anywhere; }

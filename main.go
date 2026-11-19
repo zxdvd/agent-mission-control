@@ -70,6 +70,7 @@ func decodeNewAttempt(body io.Reader) (store.NewAttemptInput, error) {
 func handler(s *store.Store) http.Handler {
 	m := http.NewServeMux()
 	registerLocalVisibility(m, s)
+	registerFollowUps(m, s)
 	write := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(v)
@@ -333,6 +334,12 @@ func loopback(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "follow-up-worker" {
+		if e := followUpWorker(os.Args[2:], os.Stdout); e != nil {
+			log.Fatal(e)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "codex-run" {
 		if e := codexRun(os.Args[2:], os.Stdin, os.Stdout); e != nil {
 			log.Fatal(e)

@@ -36,6 +36,20 @@
 
 0.1.49 可在详情直接展开完整背景，不必翻原始记录。没有具体待办的交付只提示「待查看」，不置顶要求审阅。
 
+### 0.1.50：同卡继续跟进
+
+有证据的本地交付可以在原卡留下「解释」或「调整」指示，例如请解释现有方案、补一个验证，或在隔离工作区修改。它另记一条指示和回报，不修改原交付、证据、已查看标记或决定。旧交付上下文是参考，以本次指示和原任务允许的范围为准。
+
+网页保存指示不等于执行。默认不运行执行器；执行端必须由操作者预先为**这一张卡**配置。接手始终是一个明确独立的 Codex 执行，不恢复旧 Codex 会话，不往现有终端发按键。单次运行后退出；用 `-watch` 明确选择前台持续领取，不必对每条指示再跑命令。进程中断或回执不明时不自动重发，请先核对本机结果。任务已有未处理决定、或指向的交付变化时，不凭旧卡继续执行。
+
+```sh
+agent-workbench follow-up-worker -watch -db /absolute/path/workbench.db \
+  -task WORK_ID -cwd /absolute/path/to/authorized/worktree \
+  -codex-home /absolute/path/to/dedicated/codex-home -ack-vetted-runner
+```
+
+不加 `-allow-adjust` 时只领取解释；启用调整须明确加上该参数并使用专用 Git worktree，而非主 checkout。需要支持 `--strict-config` 和 `--ephemeral` 的 Codex CLI。`-codex-home` 指向已准备并审查过的独立运行环境；本工具不安装 Codex，不创建或复制凭据，不变更其审批策略。只读沙箱并不限制外部连接器：使用前确认该进程的环境变量、MCP、应用、插件、hooks 和组织/项目策略符合任务授权。没有这样的环境时只保存指示，不执行。
+
 ## 从源码构建
 
 ```sh

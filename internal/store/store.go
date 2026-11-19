@@ -256,6 +256,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, e
 	}
+	if e = s.initFollowUps(); e != nil {
+		db.Close()
+		return nil, e
+	}
 	return s, nil
 }
 func (s *Store) Close() error { return s.db.Close() }

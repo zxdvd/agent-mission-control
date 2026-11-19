@@ -6,6 +6,7 @@ import { codeDelivery } from './code-delivery';
 import { HerdrPanel } from './herdr-panel';
 import { CreateWork } from './create-work';
 import { latestProjectReport } from './project-report';
+import { ReportFollowUps } from './report-follow-ups-panel';
 import { snapshotRefresh, watchVisibleRefresh, type SnapshotFreshness } from './refresh';
 
 import { goalWorkLinks, taskNoticeKey, hiddenLocalWork, pinLocalVisibility, localVisibilityRequest, type LocalVisibilityTarget, previousBlockedAttempts, type Project, type Task, creationProjectName, parseWorkFragment, workItemLink, workLinkIntent, pinNewAttempt, newAttemptRequest, type NewAttemptTarget, taskProjectLabel, taskProjectView, workProjectGroups, projectWorkCounts, taskBadge, pending, answered, needsDecision, evidenceLink, evidenceOrigin, evidenceExcerpt, taskOrigin, type WorkFilter, matchesWorkFilter, matchesWorkView, hiddenActiveSearchCount, matchesTaskSearch, hasWorkIssue, workIssueLabel, activeWork, endedLocalFollowUp, localFollowUpRequest, pinRowFollowUp, rowFollowUpRequest, pendingDeliveryReview, pinDeliveryReview, deliveryReviewRequest, type DeliveryReviewTarget, currentReadyReportID, reviewedDelivery, previousDeliveryEvidence, previousEvidenceUnretained, codexStartObservation, taskSummary, codexLaunchNotice } from './model';
@@ -186,6 +187,7 @@ function App(){
  <section className="brief-section"><h3>验证了哪些</h3>{detailBrief.verification.length?<ul>{detailBrief.verification.map((item,index)=><li key={index}>{item}</li>)}</ul>:<p className="muted">未单独记录验证结果</p>}</section>
  {!primaryAction&&actionSection}
  <CodeDelivery task={active}/>
+ <ReportFollowUps key={active.id} task={active}/>
  </div>
  {notice&&noticeScope.current===taskNoticeKey(active)&&<div className="notice" role="status">{notice}</div>}
  {(pinLocalVisibility(active)||currentReadyReportID(active)&&reviewedDelivery(active)||active.status==='blocked'&&(attemptTarget||pinNewAttempt(active)))&&<details className="detail-admin"><summary>记录操作</summary>
