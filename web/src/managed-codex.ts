@@ -2,11 +2,12 @@ export const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024;
 export const FOLLOW_UP_LIMIT = 2000;
 export type ScreenshotMime = 'image/png' | 'image/jpeg';
 export type ScreenshotInput = {mime_type: ScreenshotMime; data_base64: string};
+export type ManagedMode = 'read_only' | 'no_sandbox';
 export type ManagedAction = 'start' | 'follow_up';
 export type ManagedState = 'pending' | 'running' | 'completed' | 'blocked' | 'uncertain';
 export type ManagedTurn = {id: string; kind: ManagedAction; state: ManagedState; message?: string; image_url?: string; reply?: string};
-export type ManagedSnapshot = {run_id: string; enabled: boolean; managed: boolean; can_start: boolean; can_follow_up: boolean; initial_image_url?: string; turns: ManagedTurn[]};
-export type ManagedReceipt = {action: ManagedAction; request_id: string};
+export type ManagedSnapshot = {mode?: ManagedMode; run_id: string; enabled: boolean; managed: boolean; can_start: boolean; can_follow_up: boolean; initial_image_url?: string; turns: ManagedTurn[]};
+export type ManagedReceipt = {action: ManagedAction; request_id: string; mode?: 'no_sandbox'};
 export type ManagedRequest = ManagedReceipt & {run_id: string; message?: string; image?: ScreenshotInput};
 
 export function screenshotError(file: {type: string; size: number}): string {
@@ -44,14 +45,20 @@ export function parseManagedReceipt(raw: string | null): ManagedReceipt | undefi
  try {
   const value = JSON.parse(raw);
   if ((value?.action === 'start' || value?.action === 'follow_up') && typeof value.request_id === 'string' &&
-   /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.request_id)) return {action: value.action, request_id: value.request_id};
+   /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.request_id)) return {action: value.action, request_id: value.request_id, ...(value.mode === 'no_sandbox' ? {mode: 'no_sandbox'} : {})};
  } catch {/* Old or invalid session data is not a receipt. */}
 }
 
 export function managedRequest(receipt: ManagedReceipt, runID: string, message: string, image?: ScreenshotInput): ManagedRequest {
- if (receipt.action === 'start') return {action: receipt.action, request_id: receipt.request_id, run_id: runID};
+ const target = {action: receipt.action, request_id: receipt.request_id, run_id: runID,
+  ...(receipt.mode ? {mode: receipt.mode} : {})};
+ if (receipt.action === 'start') return target;
  const text = message.trim();
- return {action: receipt.action, request_id: receipt.request_id, run_id: runID, ...(text ? {message: text} : {}), ...(image ? {image} : {})};
+ return {...target, ...(text ? {message: text} : {}), ...(image ? {image} : {})};
+}
+
+export function managedRequestModeMatches(snapshot: ManagedSnapshot, receipt: ManagedReceipt): boolean {
+ return snapshot.enabled && (snapshot.mode ?? 'read_only') === (receipt.mode ?? 'read_only');
 }
 
 export function receiptConfirmed(snapshot: ManagedSnapshot, receipt: ManagedReceipt): boolean {

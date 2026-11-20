@@ -320,7 +320,12 @@ func handlerWithManaged(s *store.Store, worker *managedWorker) http.Handler {
 	})
 	m.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 	sub, _ := fs.Sub(assets, "web/dist")
-	m.Handle("/", http.FileServer(http.FS(sub)))
+	static := http.FileServer(http.FS(sub))
+	m.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		w.Header().Set("X-Frame-Options", "DENY")
+		static.ServeHTTP(w, r)
+	}))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" && r.Method != "HEAD" {
 			origin := r.Header.Get("Origin")
@@ -381,7 +386,8 @@ func main() {
 	db := flag.String("db", "workbench.db", "SQLite database file")
 	demo := flag.Bool("demo", false, "explicitly seed synthetic demo tasks in this database")
 	managedHome := flag.String("managed-codex-home", "", "dedicated canonical Codex home for explicit card actions")
-	managedCwd := flag.String("managed-cwd", "", "dedicated canonical read-only working directory for explicit card actions")
+	managedCwd := flag.String("managed-cwd", "", "dedicated canonical working directory for explicit card actions")
+	managedNoSandbox := flag.Bool("managed-no-sandbox", false, "explicitly allow managed text tasks without a Codex shell sandbox; local foreground operator unlock required")
 	ackManaged := flag.Bool("ack-vetted-runner", false, "operator confirms managed Codex home, project rules, extensions and connectors are suited to this scope")
 	flag.Parse()
 	if !loopback(*addr) {
@@ -398,15 +404,32 @@ func main() {
 		}
 	}
 	var worker *managedWorker
-	if *managedHome != "" || *managedCwd != "" || *ackManaged {
+	if *managedHome != "" || *managedCwd != "" || *ackManaged || *managedNoSandbox {
 		if *demo {
 			log.Fatal("managed Codex cannot be enabled with demo data")
 		}
-		worker, e = newManagedWorker(*managedHome, *managedCwd, *ackManaged)
+		worker, e = newManagedWorker(*managedHome, *managedCwd, *ackManaged, *managedNoSandbox)
 		if e != nil {
 			log.Fatal(e)
 		}
 	}
+	listener, e := net.Listen("tcp", *addr)
+	if e != nil {
+		log.Fatal(e)
+	}
+	defer listener.Close()
 	fmt.Printf("Local work records: http://%s (managed Agent only after explicit action: %t; synthetic seed: %t)\n", strings.TrimSpace(*addr), worker != nil, *demo)
-	log.Fatal(http.ListenAndServe(*addr, handlerWithManaged(s, worker)))
+	if worker != nil && worker.noSandbox {
+		fmt.Printf("Managed Codex: no shell sandbox. Working directory: %q. Files outside it are not sandbox-protected.\n", worker.cwd)
+		tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+		if err != nil {
+			log.Fatal("managed no-sandbox mode requires a private controlling terminal; server not started")
+		}
+		_, err = fmt.Fprintf(tty, "Private Workbench browser unlock code (this launch only): %s\n", worker.runCode)
+		_ = tty.Close()
+		if err != nil {
+			log.Fatal("managed no-sandbox unlock could not be shown in the controlling terminal; server not started")
+		}
+	}
+	log.Fatal(http.Serve(listener, handlerWithManaged(s, worker)))
 }

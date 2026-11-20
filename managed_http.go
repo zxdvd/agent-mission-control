@@ -3,6 +3,7 @@ package main
 import (
 	"agentworkbench/internal/store"
 	"bytes"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -106,6 +107,7 @@ type managedTurnView struct {
 	Reply    string `json:"reply,omitempty"`
 }
 type managedView struct {
+	Mode            string            `json:"mode,omitempty"`
 	Enabled         bool              `json:"enabled"`
 	Managed         bool              `json:"managed"`
 	RunID           string            `json:"run_id"`
@@ -124,6 +126,9 @@ func managedReadView(s *store.Store, worker *managedWorker, id string) (managedV
 		return managedView{}, err
 	}
 	v := managedView{Enabled: worker != nil, RunID: t.RunID, Turns: []managedTurnView{}}
+	if worker != nil {
+		v.Mode = worker.mode()
+	}
 	if state == nil {
 		return v, nil
 	}
@@ -133,6 +138,9 @@ func managedReadView(s *store.Store, worker *managedWorker, id string) (managedV
 	v.Managed = len(state.Turns) != 0
 	if worker != nil {
 		v.CanStart, v.CanFollowUp = state.Available(t, worker.runner, worker.owner)
+		if worker.noSandbox && state.HasInitial {
+			v.CanStart = false
+		}
 	}
 	for _, turn := range state.Turns {
 		item := managedTurnView{ID: turn.ID, Kind: turn.Kind, Message: turn.Message, State: turn.State, Reply: turn.Reply}
@@ -174,6 +182,7 @@ func registerManaged(m *http.ServeMux, s *store.Store, worker *managedWorker) {
 			return
 		}
 		var in struct {
+			Mode    string             `json:"mode"`
 			Action  string             `json:"action"`
 			ID      string             `json:"request_id"`
 			RunID   string             `json:"run_id"`
@@ -192,12 +201,37 @@ func registerManaged(m *http.ServeMux, s *store.Store, worker *managedWorker) {
 			writeMutationError(w, "缺少当前执行编号、请求编号，或指示为空/超过 2000 字。", http.StatusBadRequest)
 			return
 		}
+		if (in.Mode != "" || worker.noSandbox) && in.Mode != worker.mode() {
+			writeMutationError(w, "Codex 执行模式未确认或已变化。请刷新此卡，核对模式后再操作。", http.StatusConflict)
+			return
+		}
+		id := r.PathValue("id")
+		if worker.noSandbox {
+			code := r.Header.Get("X-Workbench-Run-Code")
+			if worker.runCode == "" || subtle.ConstantTimeCompare([]byte(code), []byte(worker.runCode)) != 1 {
+				writeMutationError(w, "无沙箱执行码有误或已过期。请输入当前工作台启动终端里的执行码。", http.StatusForbidden)
+				return
+			}
+			if in.Action == "start" {
+				task, state, err := s.ManagedSnapshot(id)
+				if err != nil {
+					managedWriteError(w, err)
+					return
+				}
+				if strings.TrimSpace(task.Goal) == "" || (state != nil && state.HasInitial) {
+					writeMutationError(w, "无沙箱模式仅处理文字任务。请新建不含截图的文字事项，或重启工作台使用只读模式。", http.StatusConflict)
+					return
+				}
+			} else if in.Image != nil {
+				writeMutationError(w, "无沙箱模式不发送截图。请只提交文字补充。", http.StatusConflict)
+				return
+			}
+		}
 		img, err := validatedManagedImage(in.Image)
 		if err != nil {
 			writeMutationError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		id := r.PathValue("id")
 		added, err := s.QueueManaged(id, worker.runner, worker.owner, store.ManagedInput{ID: in.ID, RunID: in.RunID, Kind: in.Action, Message: in.Message, Image: img})
 		if err != nil {
 			managedWriteError(w, err)

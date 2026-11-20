@@ -110,7 +110,7 @@ export function CreateWork({onCreated,defaultProjectName=''}:{onCreated:(task:Ta
        onChange={event=>{touched.current=true;setGoal(event.currentTarget.value)}}
        placeholder="告诉我你想做什么。可直接粘贴图片，或把图片和文件拖到这里。"/>
       {(image||files.length>0)&&<ul className="new-work-attachments" aria-label="待保存附件">
-       {image&&<li><img src={screenshotPreview(image.input)} alt=""/><div><span title={image.name}>{image.name}</span><small>截图 · 开始后发送给 Codex</small></div>
+       {image&&<li><img src={screenshotPreview(image.input)} alt=""/><div><span title={image.name}>{image.name}</span><small>截图 · 仅在只读模式执行时发送给 Codex</small></div>
         <button type="button" disabled={reading} aria-label={`移除 ${image.name}`} onClick={()=>{setImage(undefined);setFileNotes([]);text.current?.focus()}}>✕</button></li>}
        {files.map(file=><li key={file.key}><div><span title={file.name}>{file.name}</span><small>仅本机 · 不发送给 Codex</small></div>
         <button type="button" disabled={reading} aria-label={`移除 ${file.name}`} onClick={()=>{setFiles(current=>current.filter(item=>item.key!==file.key));setFileNotes([]);text.current?.focus()}}>✕</button></li>)}
@@ -123,7 +123,7 @@ export function CreateWork({onCreated,defaultProjectName=''}:{onCreated:(task:Ta
        <button className="primary" type="submit" disabled={reading||!canSave}>{busy?'保存中…':'保存工作'}</button>
       </div>
      </div>
-     <small id={limitsID} className="new-work-limits">一张 PNG / JPEG 截图（4 MiB）可供 Codex 读取；另可附 3 个仅保存在本机的文件（每个 2 MiB）。</small>
+     <small id={limitsID} className="new-work-limits">只读模式可将一张 PNG / JPEG 截图（4 MiB）交给 Codex；另可附 3 个仅保存在本机的文件（每个 2 MiB）。</small>
      {!goal.trim()&&!image&&files.length>0&&<small>只有本地附件时仍可保存，但不能从卡内启动 Codex。</small>}
      {reading&&<small role="status">正在读取附件…</small>}
      {goalTooLong&&<p className="error" role="alert">任务内容最多 2000 字。</p>}

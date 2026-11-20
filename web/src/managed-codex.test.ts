@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {
- MAX_SCREENSHOT_BYTES, managedImageURL, managedPath, managedRequest, managedStateLabel, parseManagedReceipt,
+ MAX_SCREENSHOT_BYTES, managedImageURL, managedPath, managedRequest, managedRequestModeMatches, managedStateLabel, parseManagedReceipt,
  receiptConfirmed, screenshotError, screenshotFromDataURL, screenshotPreview, type ManagedReceipt, type ManagedSnapshot,
 } from './managed-codex.ts';
 
@@ -48,4 +48,16 @@ test('saved receipt keeps only request identity and requires exact server turn t
  assert.match(managedStateLabel.pending,/排队/);
  assert.match(managedStateLabel.completed,/未验收/);
  assert.match(managedStateLabel.uncertain,/待核实/);
+});
+
+
+test('no-sandbox request receipt pins the displayed mode without storing the unlock code',()=>{
+ const full: ManagedReceipt = {...receipt,mode:'no_sandbox'};
+ assert.deepEqual(parseManagedReceipt(JSON.stringify({...full,code:'secret'})),full);
+ assert.deepEqual(managedRequest(full,'r1',' explicit instructions '),{...full,run_id:'r1',message:'explicit instructions'});
+ const unlockedMode = {...snapshot,mode:'no_sandbox'} as const;
+ assert.equal(managedRequestModeMatches(unlockedMode,full),true);
+ assert.equal(managedRequestModeMatches(unlockedMode,receipt),false);
+ assert.equal(managedRequestModeMatches(snapshot,full),false);
+ assert.equal(managedRequestModeMatches(snapshot,receipt),true);
 });
