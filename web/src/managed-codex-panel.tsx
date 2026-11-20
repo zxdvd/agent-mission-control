@@ -16,20 +16,16 @@ type ManagedContext = {
  snapshot?: ManagedSnapshot; readError: string; submitError: string; loading: boolean; sending: boolean; checked: boolean;
  receipt?: ManagedReceipt; draft: ManagedDraft; changeDraft: (change: (draft: ManagedDraft) => ManagedDraft) => void;
  refresh: () => void; send: (action: ManagedAction) => void; canRetry: boolean;
- runCode: string; changeRunCode: (value: string) => void;
  receiptModeChanged: boolean; discardOldReceipt: () => void;
 };
 const Context = createContext<ManagedContext | undefined>(undefined);
-const validRunCode = (value: string) => /^[a-f0-9]{32}$/.test(value.trim());
-// Shared by drawers in this tab only. Never write the launch secret to storage.
-let tabRunCode = '';
 
 class ManagedRequestError extends Error {
  constructor(message: string, readonly status: number) { super(message); }
 }
-async function readSnapshot(path: string, runID: string, signal: AbortSignal, body?: ManagedRequest, runCode?: string): Promise<ManagedSnapshot> {
+async function readSnapshot(path: string, runID: string, signal: AbortSignal, body?: ManagedRequest): Promise<ManagedSnapshot> {
  const res = await fetch(path,{cache:'no-store',signal,...(body ? {
-  method:'POST', headers:{'Content-Type':'application/json',...(runCode ? {'X-Workbench-Run-Code':runCode} : {})}, body:JSON.stringify(body),
+  method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
  } : {})});
  if (!res.ok) {
   const error = await res.json().catch(() => undefined);
@@ -51,7 +47,6 @@ export function ManagedCodexProvider({task, drafts, children}: {
  const local = task.source === 'local' && task.project_id !== 'demo';
  const [draft,setDraft] = useState<ManagedDraft>(()=>drafts.get(key) ?? {parts:[]});
  const [snapshot,setSnapshot] = useState<ManagedSnapshot>();
- const [runCode,setRunCode] = useState(tabRunCode);
  const [loading,setLoading] = useState(local), [readError,setReadError] = useState(''), [submitError,setSubmitError] = useState('');
  const [sending,setSending] = useState(false), [checked,setChecked] = useState(false);
  const [receipt,setReceipt] = useState(() => {
@@ -119,10 +114,8 @@ export function ManagedCodexProvider({task, drafts, children}: {
   const unsafe = snapshot.mode === 'no_sandbox';
   if (action === 'follow_up' && (!draft.parts.length || Array.from(message).length>FOLLOW_UP_LIMIT ||
    (!message.trim() && (unsafe || !inlineImageCount(draft.parts))))) return;
-  if (unsafe && !validRunCode(runCode)) return;
   const nextMarker: ManagedReceipt = marker ?? {action,request_id:crypto.randomUUID(),...(unsafe ? {mode:'no_sandbox'} : {})};
   if (!managedRequestModeMatches(snapshot,nextMarker)) return;
-  const sentCode = unsafe ? runCode.trim() : undefined;
   const payload = marker && saved?.sent?.request_id === marker.request_id ? saved.sent : managedRequest(nextMarker,task.run_id,message,undefined,draft.parts);
   try { sessionStorage.setItem(storageKey,JSON.stringify(nextMarker)); }
   catch { setSubmitError('浏览器无法保存请求编号，尚未发送。'); return; }
@@ -132,17 +125,12 @@ export function ManagedCodexProvider({task, drafts, children}: {
   setReceipt(nextMarker); setSending(true); setChecked(false); setSubmitError(''); setReadError('');
   changeDraft(current=>({...current,sent:payload}));
   try {
-   const next = await readSnapshot(path,task.run_id,AbortSignal.timeout(15000),payload,sentCode);
+   const next = await readSnapshot(path,task.run_id,AbortSignal.timeout(15000),payload);
    if (!receiptConfirmed(next,nextMarker)) throw new Error('响应未包含对应的执行记录');
-   if (sentCode) tabRunCode = sentCode;
    forget(nextMarker,true);
    if (mounted.current) apply(next);
   } catch (e) {
    if (e instanceof ManagedRequestError && [400,403,404,409,413,415].includes(e.status)) {
-    if (sentCode && e.status === 403) {
-     if (tabRunCode === sentCode) tabRunCode = '';
-     if (mounted.current) setRunCode('');
-    }
     forget(nextMarker,false);
     if (mounted.current) setSubmitError(e.message);
    } else if (mounted.current) setSubmitError(`未能确认提交：${(e as Error).message}。不会自动重发，请先刷新核实。`);
@@ -154,11 +142,11 @@ export function ManagedCodexProvider({task, drafts, children}: {
  const receiptModeChanged = !!receipt && checked && !!snapshot?.enabled &&
   !managedRequestModeMatches(snapshot,receipt) && !receiptConfirmed(snapshot,receipt);
  const canRetry = !!receipt && checked && !!snapshot && managedRequestModeMatches(snapshot,receipt) &&
-  (snapshot.mode !== 'no_sandbox' || validRunCode(runCode)) && (receipt.action === 'start'
+  (receipt.action === 'start'
   ? !!snapshot?.can_start
   : !!snapshot?.can_follow_up && draft.sent?.request_id === receipt.request_id);
  return <Context.Provider value={{
-  snapshot,readError,submitError,loading,sending,checked,receipt,draft,changeDraft,canRetry,runCode,changeRunCode:setRunCode,
+  snapshot,readError,submitError,loading,sending,checked,receipt,draft,changeDraft,canRetry,
   receiptModeChanged,discardOldReceipt:()=>{if (receipt && receiptModeChanged && !writing.current) forget(receipt,false);},
   refresh:()=>void reader.current?.refresh(),send:action=>void submit(action),
  }}>{children}</Context.Provider>;
@@ -180,9 +168,8 @@ export function ManagedTaskContent({taskID,children}: {taskID: string;children:R
 
 export function ManagedCodexPanel({task}: {task: Task}) {
  const context = useContext(Context)!;
- const {snapshot,readError,submitError,loading,sending,checked,receipt,draft,changeDraft,canRetry,refresh,send,runCode,changeRunCode,receiptModeChanged,discardOldReceipt} = context;
+ const {snapshot,readError,submitError,loading,sending,checked,receipt,draft,changeDraft,canRetry,refresh,send,receiptModeChanged,discardOldReceipt} = context;
  const unsafe = snapshot?.mode === 'no_sandbox';
- const codeNeeded = unsafe && !validRunCode(runCode);
  const editor=useRef<InlineEditorHandle>(null),picker=useRef<HTMLInputElement>(null),pickerAt=useRef<Range>(undefined);
  const picking=useRef(false);
  const [reading,setReading]=useState(false),[imageError,setImageError]=useState('');
@@ -208,12 +195,8 @@ export function ManagedCodexPanel({task}: {task: Task}) {
   <h3>Codex 执行</h3>
   {unsafe && <p><strong>无 Codex 沙箱</strong> · Codex 可用当前电脑账号的权限访问或修改文件。设定工作目录不等于隔离。须有文字指示，截图仅作为参考。</p>}
   {unsafe && task.status === 'not_started' && !task.goal.trim() && (snapshot?.initial_image_url || snapshot?.initial_parts?.length) && <p>无沙箱模式须有文字任务；只有截图的事项可保存，但不能在此模式开工。</p>}
-  {unsafe && (snapshot?.can_start || snapshot?.can_follow_up || receipt) && <label className="follow-up-message">本次启动的执行码
-   <input type="password" autoComplete="off" spellCheck={false} disabled={sending} value={runCode}
-    onChange={e=>changeRunCode(e.currentTarget.value)} placeholder="从工作台启动终端复制"/>
-  </label>}
   {snapshot?.can_start && !receipt && <div className="managed-actions">
-   <button type="button" className="primary" disabled={loading || sending || !checked || codeNeeded} onClick={()=>send('start')}>{unsafe?'开始无沙箱执行':'开始执行'}</button>
+   <button type="button" className="primary" disabled={loading || sending || !checked} onClick={()=>send('start')}>{unsafe?'开始无沙箱执行':'开始执行'}</button>
    <small>{unsafe?'任务文字及参考截图会发送给 Codex；请先核对。':'任务文字和截图随执行发送给已配置的 Codex。只读检查，不修改工作区。'}</small>
   </div>}
   {receipt && <p role="status">{sending ? '提交中…' : '上次提交待核实。刷新只读取，不会重发。'}</p>}
@@ -245,7 +228,7 @@ export function ManagedCodexPanel({task}: {task: Task}) {
    {imageError&&<p role="alert" className="error">{imageError}</p>}
    {tooLong&&<p role="alert" className="error">补充指示最多 2000 字。</p>}
    <small>{unsafe?'须有文字指示，截图仅作参考；沿用同一无沙箱会话。':'文字和截图按原顺序发送给同一个只读会话。'} 最多 3 张截图，每张 4 MiB。</small>
-   <button type="submit" className="primary" disabled={loading || sending || !checked || !!receipt || reading || !snapshot?.can_follow_up || codeNeeded || tooLong || (!message.trim()&&(unsafe||!images))}>{unsafe?'在无沙箱模式继续':'让 Codex 继续'}</button>
+   <button type="submit" className="primary" disabled={loading || sending || !checked || !!receipt || reading || !snapshot?.can_follow_up || tooLong || (!message.trim()&&(unsafe||!images))}>{unsafe?'在无沙箱模式继续':'让 Codex 继续'}</button>
    {!snapshot?.can_follow_up && !receipt && <small>暂不可发送，草稿保留在此页面。</small>}
   </form>}
  </section>;

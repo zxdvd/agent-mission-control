@@ -22,7 +22,7 @@ func TestManagedInlineImagesPreservePositionsAndSameNativeThread(t *testing.T) {
 	defer s.Close()
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	home, _ := filepath.EvalSymlinks(t.TempDir())
-	worker := &managedWorker{cwd: dir, home: home, runner: "fixed", owner: "owner", runCode: "fixture-secret", noSandbox: true}
+	worker := &managedWorker{cwd: dir, home: home, runner: "fixed", owner: "owner", noSandbox: true}
 	red := managedPNG(t, color.RGBA{255, 0, 0, 255})
 	green := managedPNG(t, color.RGBA{0, 255, 0, 255})
 	blue := managedPNG(t, color.RGBA{0, 0, 255, 255})
@@ -86,10 +86,10 @@ func TestManagedInlineImagesPreservePositionsAndSameNativeThread(t *testing.T) {
 		t.Fatal("list exposes inline assets")
 	}
 	start := map[string]any{"action": "start", "run_id": card.RunID, "request_id": "inline-start", "mode": "no_sandbox"}
-	if r := managedRequest(t, h, "POST", path, origin, start); r.Code != http.StatusForbidden || len(calls) != 0 {
-		t.Fatalf("screenshots bypassed the launch code: %d", r.Code)
+	if r := managedRequest(t, h, "POST", path, "http://example.invalid", start); r.Code != http.StatusForbidden || len(calls) != 0 {
+		t.Fatalf("screenshots bypassed the origin check: %d", r.Code)
 	}
-	managedTestView(t, managedRequest(t, h, "POST", path, origin, start, worker.runCode))
+	managedTestView(t, managedRequest(t, h, "POST", path, origin, start))
 	managedEventually(t, func() bool {
 		v := managedTestView(t, managedRequest(t, h, "GET", path, "", nil))
 		return len(v.Turns) == 1 && v.Turns[0].State == "completed"
@@ -97,10 +97,10 @@ func TestManagedInlineImagesPreservePositionsAndSameNativeThread(t *testing.T) {
 	original, _ := s.Get(card.ID)
 	followParts := []map[string]any{img(blue), text(" Compare against "), img(red), text(" using the same criteria.")}
 	follow := map[string]any{"action": "follow_up", "run_id": card.RunID, "request_id": "inline-follow", "mode": "no_sandbox", "parts": followParts}
-	managedTestView(t, managedRequest(t, h, "POST", path, origin, follow, worker.runCode))
-	managedTestView(t, managedRequest(t, h, "POST", path, origin, follow, worker.runCode))
+	managedTestView(t, managedRequest(t, h, "POST", path, origin, follow))
+	managedTestView(t, managedRequest(t, h, "POST", path, origin, follow))
 	follow["parts"] = []map[string]any{img(red), text(" Compare against "), img(blue), text(" using the same criteria.")}
-	if r := managedRequest(t, h, "POST", path, origin, follow, worker.runCode); r.Code != http.StatusConflict {
+	if r := managedRequest(t, h, "POST", path, origin, follow); r.Code != http.StatusConflict {
 		t.Fatalf("reordered images accepted under same receipt: %d", r.Code)
 	}
 	managedEventually(t, func() bool {

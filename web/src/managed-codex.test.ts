@@ -51,13 +51,13 @@ test('saved receipt keeps only request identity and requires exact server turn t
 });
 
 
-test('no-sandbox request receipt pins the displayed mode without storing the unlock code',()=>{
+test('no-sandbox request receipt pins the displayed mode without retaining unrelated fields',()=>{
  const full: ManagedReceipt = {...receipt,mode:'no_sandbox'};
- assert.deepEqual(parseManagedReceipt(JSON.stringify({...full,code:'secret'})),full);
+ assert.deepEqual(parseManagedReceipt(JSON.stringify({...full,unexpected:'ignore'})),full);
  assert.deepEqual(managedRequest(full,'r1',' explicit instructions '),{...full,run_id:'r1',message:'explicit instructions'});
- const unlockedMode = {...snapshot,mode:'no_sandbox'} as const;
- assert.equal(managedRequestModeMatches(unlockedMode,full),true);
- assert.equal(managedRequestModeMatches(unlockedMode,receipt),false);
+ const noSandboxMode = {...snapshot,mode:'no_sandbox'} as const;
+ assert.equal(managedRequestModeMatches(noSandboxMode,full),true);
+ assert.equal(managedRequestModeMatches(noSandboxMode,receipt),false);
  assert.equal(managedRequestModeMatches(snapshot,full),false);
  assert.equal(managedRequestModeMatches(snapshot,receipt),true);
 });

@@ -37,7 +37,7 @@ func managedTestImage(b []byte) *managedImageInput {
 	return &managedImageInput{Mime: "image/png", Data: base64.StdEncoding.EncodeToString(b)}
 }
 
-func managedRequest(t *testing.T, h http.Handler, method, path, origin string, payload any, runCode ...string) *httptest.ResponseRecorder {
+func managedRequest(t *testing.T, h http.Handler, method, path, origin string, payload any) *httptest.ResponseRecorder {
 	t.Helper()
 	var encoded []byte
 	if payload != nil {
@@ -55,9 +55,6 @@ func managedRequest(t *testing.T, h http.Handler, method, path, origin string, p
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
-	}
-	if len(runCode) != 0 {
-		req.Header.Set("X-Workbench-Run-Code", runCode[0])
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

@@ -25,7 +25,6 @@ const (
 type managedWorker struct {
 	binary, cwd, home, runner, owner string
 	noSandbox                        bool
-	runCode                          string
 	runMu                            sync.Mutex
 	turn                             followUpTurn
 }
@@ -52,7 +51,7 @@ func newManagedWorker(home, cwd string, ack, noSandbox bool) (*managedWorker, er
 	if !ack || !filepath.IsAbs(home) {
 		return nil, errors.New("managed Codex requires an explicit absolute -managed-codex-home and -ack-vetted-runner")
 	}
-	// Only the managed mode protected by a foreground launch code can use
+	// Only the explicitly enabled managed no-sandbox mode may use
 	// the current account's global Codex configuration and its logged-in tools.
 	home, err = validateVettedCodexHome(home, ack, dir, noSandbox)
 	if err != nil {
@@ -74,20 +73,15 @@ func newManagedWorker(home, cwd string, ack, noSandbox bool) (*managedWorker, er
 		return nil, err
 	}
 	// Keep existing read-only bindings compatible; never resume them across
-	// a change in permissions. Use a distinct per-process launch secret.
-	bindingMode, runCode := "read-only", ""
+	// a change in permissions.
+	bindingMode := "read-only"
 	if noSandbox {
 		bindingMode = "danger-full-access"
-		var code [16]byte
-		if _, err := rand.Read(code[:]); err != nil {
-			return nil, err
-		}
-		runCode = fmt.Sprintf("%x", code)
 	}
 	return &managedWorker{
 		binary: binary, cwd: dir, home: home, owner: fmt.Sprintf("%x", owner),
-		noSandbox: noSandbox, runCode: runCode,
-		runner: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(dir+"\x00"+home+"\x00"+bindingMode))),
+		noSandbox: noSandbox,
+		runner:    fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(dir+"\x00"+home+"\x00"+bindingMode))),
 		turn: func(ctx context.Context, binary, dir string, args []string, prompt, nativeID string) (codexResult, string, error) {
 			return runDedicatedCodexTurn(ctx, binary, dir, home, args, prompt, nativeID)
 		},

@@ -387,7 +387,7 @@ func main() {
 	demo := flag.Bool("demo", false, "explicitly seed synthetic demo tasks in this database")
 	managedHome := flag.String("managed-codex-home", "", "explicit canonical Codex home; the account default is accepted only with -managed-no-sandbox")
 	managedCwd := flag.String("managed-cwd", "", "dedicated canonical working directory for explicit card actions")
-	managedNoSandbox := flag.Bool("managed-no-sandbox", false, "explicitly allow managed text tasks without a Codex shell sandbox; local foreground operator unlock required")
+	managedNoSandbox := flag.Bool("managed-no-sandbox", false, "explicitly allow managed text tasks without a Codex shell sandbox")
 	ackManaged := flag.Bool("ack-vetted-runner", false, "operator confirms managed Codex home, project rules, extensions and connectors are suited to this scope")
 	flag.Parse()
 	if !loopback(*addr) {
@@ -421,15 +421,6 @@ func main() {
 	fmt.Printf("Local work records: http://%s (managed Agent only after explicit action: %t; synthetic seed: %t)\n", strings.TrimSpace(*addr), worker != nil, *demo)
 	if worker != nil && worker.noSandbox {
 		fmt.Printf("Managed Codex: no shell sandbox. Working directory: %q. Files outside it are not sandbox-protected.\n", worker.cwd)
-		tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
-		if err != nil {
-			log.Fatal("managed no-sandbox mode requires a private controlling terminal; server not started")
-		}
-		_, err = fmt.Fprintf(tty, "Private Workbench browser unlock code (this launch only): %s\n", worker.runCode)
-		_ = tty.Close()
-		if err != nil {
-			log.Fatal("managed no-sandbox unlock could not be shown in the controlling terminal; server not started")
-		}
 	}
 	log.Fatal(http.Serve(listener, handlerWithManaged(s, worker)))
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"image/color"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,7 +14,7 @@ import (
 	"testing"
 )
 
-func TestManagedNoSandboxRequiresExactModeAndLocalUnlockForTextOnly(t *testing.T) {
+func TestManagedNoSandboxRequiresExactModeSameOriginAndWrittenInstructions(t *testing.T) {
 	cwd, _ := filepath.EvalSymlinks(t.TempDir())
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	bin := t.TempDir()
@@ -32,9 +33,9 @@ func TestManagedNoSandboxRequiresExactModeAndLocalUnlockForTextOnly(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if readOnly.mode() != managedReadOnlyMode || readOnly.runCode != "" ||
-		worker.mode() != managedNoSandboxMode || worker.runner == readOnly.runner || len(worker.runCode) != 32 {
-		t.Fatal("runner mode, binding or launch secret not correctly separated")
+	if readOnly.mode() != managedReadOnlyMode ||
+		worker.mode() != managedNoSandboxMode || worker.runner == readOnly.runner {
+		t.Fatal("runner mode or binding not correctly separated")
 	}
 	st, err := store.Open(filepath.Join(t.TempDir(), "workbench.db"))
 	if err != nil {
@@ -54,8 +55,8 @@ func TestManagedNoSandboxRequiresExactModeAndLocalUnlockForTextOnly(t *testing.T
 	}
 	h := handlerWithManaged(st, worker)
 	web := managedRequest(t, h, "GET", "/", "", nil)
-	if web.Header().Get("Content-Security-Policy") != "frame-ancestors 'none'" || web.Header().Get("X-Frame-Options") != "DENY" || strings.Contains(web.Body.String(), worker.runCode) {
-		t.Fatal("browser response leaks secret or is frameable")
+	if web.Header().Get("Content-Security-Policy") != "frame-ancestors 'none'" || web.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatal("browser response is frameable")
 	}
 
 	origin := "http://127.0.0.1:18819"
@@ -70,7 +71,7 @@ func TestManagedNoSandboxRequiresExactModeAndLocalUnlockForTextOnly(t *testing.T
 	imgPath := "/api/tasks/" + withScreenshot.ID + "/managed"
 	get := managedRequest(t, h, "GET", path, "", nil)
 	v := managedTestView(t, get)
-	if !v.CanStart || v.Mode != managedNoSandboxMode || strings.Contains(get.Body.String(), worker.runCode) {
+	if !v.CanStart || v.Mode != managedNoSandboxMode {
 		t.Fatal("unexpected no-sandbox projection")
 	}
 	if v := managedTestView(t, managedRequest(t, h, "GET", imgPath, "", nil)); v.CanStart || len(v.InitialParts) != 1 || v.InitialParts[0].ImageURL == "" {
@@ -78,25 +79,41 @@ func TestManagedNoSandboxRequiresExactModeAndLocalUnlockForTextOnly(t *testing.T
 	}
 	start := map[string]string{"action": "start", "run_id": task.RunID, "request_id": "exact-start"}
 	for _, tc := range []struct {
-		mode, origin, code string
-		status             int
+		mode, origin string
+		status       int
 	}{
-		{"", origin, worker.runCode, http.StatusConflict},
-		{managedReadOnlyMode, origin, worker.runCode, http.StatusConflict},
-		{managedNoSandboxMode, "", worker.runCode, http.StatusForbidden},
-		{managedNoSandboxMode, "http://external.example", worker.runCode, http.StatusForbidden},
-		{managedNoSandboxMode, origin, "", http.StatusForbidden},
-		{managedNoSandboxMode, origin, strings.Repeat("0", 32), http.StatusForbidden},
+		{"", origin, http.StatusConflict},
+		{managedReadOnlyMode, origin, http.StatusConflict},
+		{managedNoSandboxMode, "", http.StatusForbidden},
+		{managedNoSandboxMode, "http://external.example", http.StatusForbidden},
 	} {
 		start["mode"] = tc.mode
-		w := managedRequest(t, h, "POST", path, tc.origin, start, tc.code)
-		if w.Code != tc.status || strings.Contains(w.Body.String(), worker.runCode) {
+		w := managedRequest(t, h, "POST", path, tc.origin, start)
+		if w.Code != tc.status {
 			t.Fatalf("mode or auth check: got %d, want %d", w.Code, tc.status)
 		}
 	}
 	start["mode"] = managedNoSandboxMode
+	payload, err := json.Marshal(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []struct{ remote, host string }{
+		{"192.0.2.9:10000", "127.0.0.1:18819"},
+		{"127.0.0.1:10000", "example.invalid:18819"},
+	} {
+		req := httptest.NewRequest("POST", path, strings.NewReader(string(payload)))
+		req.RemoteAddr, req.Host = source.remote, source.host
+		req.Header.Set("Origin", "http://"+source.host)
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, req)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("non-loopback client or host was accepted: %d", response.Code)
+		}
+	}
 	imgStart := map[string]string{"action": "start", "run_id": withScreenshot.RunID, "request_id": "image-start", "mode": managedNoSandboxMode}
-	if w := managedRequest(t, h, "POST", imgPath, origin, imgStart, worker.runCode); w.Code != http.StatusConflict {
+	if w := managedRequest(t, h, "POST", imgPath, origin, imgStart); w.Code != http.StatusConflict {
 		t.Fatalf("no-sandbox screenshot task accepted: %d", w.Code)
 	}
 	for _, p := range []string{path, imgPath} {
@@ -104,7 +121,7 @@ func TestManagedNoSandboxRequiresExactModeAndLocalUnlockForTextOnly(t *testing.T
 			t.Fatal("reading, creating, or rejected action produced execution receipt")
 		}
 	}
-	managedTestView(t, managedRequest(t, h, "POST", path, origin, start, worker.runCode))
+	managedTestView(t, managedRequest(t, h, "POST", path, origin, start))
 	managedEventually(t, func() bool {
 		v := managedTestView(t, managedRequest(t, h, "GET", path, "", nil))
 		return len(v.Turns) == 1 && v.Turns[0].State == "completed"
@@ -114,15 +131,12 @@ func TestManagedNoSandboxRequiresExactModeAndLocalUnlockForTextOnly(t *testing.T
 		t.Fatal("permission mode could change across continuation")
 	}
 	follow := map[string]any{"action": "follow_up", "run_id": task.RunID, "request_id": "exact-follow-up", "mode": managedNoSandboxMode, "image": managedTestImage(managedPNG(t, color.RGBA{4, 5, 6, 255}))}
-	if w := managedRequest(t, h, "POST", path, origin, follow, worker.runCode); w.Code != http.StatusConflict {
+	if w := managedRequest(t, h, "POST", path, origin, follow); w.Code != http.StatusConflict {
 		t.Fatalf("no-sandbox screenshot follow-up accepted: %d", w.Code)
 	}
 	delete(follow, "image")
 	follow["message"] = "Write the authorized fix"
-	if w := managedRequest(t, h, "POST", path, origin, follow); w.Code != http.StatusForbidden {
-		t.Fatalf("follow-up without unlock accepted: %d", w.Code)
-	}
-	managedTestView(t, managedRequest(t, h, "POST", path, origin, follow, worker.runCode))
+	managedTestView(t, managedRequest(t, h, "POST", path, origin, follow))
 	managedEventually(t, func() bool {
 		v := managedTestView(t, managedRequest(t, h, "GET", path, "", nil))
 		return len(v.Turns) == 2 && v.Turns[1].State == "completed"
@@ -134,7 +148,7 @@ func TestManagedNoSandboxRequiresExactModeAndLocalUnlockForTextOnly(t *testing.T
 		c := <-calls
 		if c.cwd != cwd || !slices.Equal(c.argv[:5], []string{"exec", "--sandbox", "danger-full-access", "--cd", cwd}) ||
 			c.argv[len(c.argv)-1] != "-" || slices.Contains(c.argv, "--dangerously-bypass-approvals-and-sandbox") ||
-			slices.Contains(c.argv, "--image") || slices.Contains(c.argv, "--last") || strings.Contains(c.prompt, worker.runCode) ||
+			slices.Contains(c.argv, "--image") || slices.Contains(c.argv, "--last") ||
 			!strings.Contains(c.prompt, "Do not push, publish, deploy") {
 			t.Fatalf("unexpected invocation %d", i)
 		}
@@ -211,7 +225,7 @@ JSON
 		t.Fatal("separate CLI worker gained access to account default")
 	}
 	worker, err := newManagedWorker(home, cwd, true, true)
-	if err != nil || worker.home != home || worker.runCode == "" {
+	if err != nil || worker.home != home {
 		t.Fatalf("could not opt into the explicitly configured account default: %v", err)
 	}
 	dedicated, err := newManagedWorker(canonicalTemp(), cwd, true, true)

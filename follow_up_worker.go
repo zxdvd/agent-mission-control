@@ -339,7 +339,7 @@ func validateVettedCodexHome(path string, ack bool, cwd string, allowDefault boo
 		ambient = resolved
 	}
 	// The exact current user's default path may be accepted only when the
-	// caller provides its own explicit, authenticated local launch gate.
+	// caller explicitly opts into the managed no-sandbox local runner.
 	explicitDefault := allowDefault && userHome != "" && home == defaultHome
 	if (!explicitDefault && (home == filepath.Clean(ambient) || home == defaultHome)) ||
 		home == cwd || strings.HasPrefix(home, cwd+string(os.PathSeparator)) {

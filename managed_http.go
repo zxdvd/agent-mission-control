@@ -3,7 +3,6 @@ package main
 import (
 	"agentworkbench/internal/store"
 	"bytes"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -280,11 +279,6 @@ func registerManaged(m *http.ServeMux, s *store.Store, worker *managedWorker) {
 		}
 		id := r.PathValue("id")
 		if worker.noSandbox {
-			code := r.Header.Get("X-Workbench-Run-Code")
-			if worker.runCode == "" || subtle.ConstantTimeCompare([]byte(code), []byte(worker.runCode)) != 1 {
-				writeMutationError(w, "无沙箱执行码有误或已过期。请输入当前工作台启动终端里的执行码。", http.StatusForbidden)
-				return
-			}
 			if in.Action == "start" {
 				task, _, err := s.ManagedSnapshot(id)
 				if err != nil {
