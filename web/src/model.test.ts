@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { answered, pending, needsDecision, states, taskBadge, evidenceLink, evidenceOrigin, evidenceExcerpt, taskOrigin, shellArgument, loopbackCLIAddress, canContinueCodex, codexRunCommand, canNameProject, projectName, validProjectName, taskProjectLabel, taskProjectView, workProjectGroups, projectWorkCounts, matchesWorkFilter, matchesWorkView, hiddenActiveSearchCount, matchesTaskSearch, hasWorkIssue, reviewEvidencePreview, codexStartObservation, taskSummary, codexLaunchNotice, codexTaskBrief, codexTaskBriefCommand, currentReadyReportID, reviewedDelivery, previousDeliveryEvidence, previousEvidenceUnretained, pendingDeliveryReview, activeWork, localFollowUpMarker, endedLocalFollowUp, localFollowUpRequest, pinRowFollowUp, rowFollowUpRequest, pinDeliveryReview, deliveryReviewRequest, deliveryHandoffText, pinNewAttempt, newAttemptRequest, parseWorkFragment, workItemLink, resolveWorkLink, workLinkIntent, creationProjectName, projectNameForNewDraft, type Task, type Command } from './model.ts';
+import { answered, pending, needsDecision, states, taskBadge, evidenceLink, evidenceOrigin, evidenceExcerpt, taskOrigin, shellArgument, loopbackCLIAddress, canContinueCodex, codexRunCommand, canNameProject, projectName, validProjectName, taskProjectLabel, taskProjectView, workProjectGroups, projectWorkCounts, matchesWorkFilter, matchesWorkView, hiddenActiveSearchCount, matchesTaskSearch, hasWorkIssue, reviewEvidencePreview, codexStartObservation, taskSummary, codexLaunchNotice, codexTaskBrief, codexTaskBriefCommand, currentReadyReportID, reviewedDelivery, previousDeliveryEvidence, previousEvidenceUnretained, pendingDeliveryReview, activeWork, localFollowUpMarker, endedLocalFollowUp, localFollowUpRequest, pinRowFollowUp, rowFollowUpRequest, pinDeliveryReview, deliveryReviewRequest, deliveryHandoffText, pinNewAttempt, newAttemptRequest, parseWorkFragment, workItemLink, resolveWorkLink, workLinkIntent, creationProjectName, type Task, type Command } from './model.ts';
 const task=():Task=>({id:'t',project_id:'p',title:'test',goal:'test',status:'needs_decision',run_id:'r1',summary:'',updated_at:'2026-01-01',observed_at:'2026-01-01',evidence:[],decision:{question:'Keep scope?',options:['yes','no']},follow_up_count:0,events:[],commands:[]});
 const command=(status='recorded'):Command=>({id:'c',kind:'decision',run_id:'r1',question:'Keep scope?',status,message:'yes',created_at:'2026-01-01'});
 test('new question needs user direction',()=>assert.equal(needsDecision(task()),true));
@@ -688,7 +688,7 @@ test('empty model-blocked report with lost start observation cannot be offered a
 });
 
 
-test('existing create form is available only in overview/local project scopes with exact name defaults',()=>{
+test('task creation is available only in overview/local project scopes with exact name defaults',()=>{
  const local={...task(),source:'local',project_id:'local',project_name:'Example Project'};
  assert.equal(creationProjectName('overview'),'');
  assert.equal(creationProjectName(taskProjectView(local)),'Example Project');
@@ -696,14 +696,9 @@ test('existing create form is available only in overview/local project scopes wi
  assert.equal(creationProjectName(taskProjectView({...local,project_name:'overview'})),'overview');
  for(const view of ['attention','decisions','source-demo','legacy-project:"Example Project"','local','project-name:invalid','project-name:123','project-name:" padded "'])assert.equal(creationProjectName(view),undefined,view);
 });
-test('scoped project default applies on blank untouched draft opening, never overwrites manual content',()=>{
- const blank={title:'',goal:'',projectName:'',touched:false};
- assert.equal(projectNameForNewDraft(blank,'Example Project'),'Example Project');
- assert.equal(projectNameForNewDraft({...blank,projectName:'AMC'},'Example Project'),'Example Project'); // prior untouched automatic default
- assert.equal(projectNameForNewDraft(blank,''),'');
- for(const draft of [{...blank,projectName:'Manual',touched:true},{...blank,projectName:'',touched:true},{...blank,title:'Typed title',projectName:'AMC'},{...blank,goal:'Typed goal',projectName:'relay'}]){
-  const before=JSON.stringify(draft);
-  assert.equal(projectNameForNewDraft(draft,'Example Project'),draft.projectName);
-  assert.equal(JSON.stringify(draft),before);
- }
+
+test('browser-created tasks show their automatic source, while legacy source stays labelled as reported',()=>{
+ const local={...task(),source:'local',project_id:'local'};
+ assert.equal(taskOrigin({...local,origin:'工作台新建'}),'本地工作 · 来源：工作台新建');
+ assert.equal(taskOrigin({...local,origin:'CLI'}),'本地工作 · 来源（填报）：CLI');
 });

@@ -73,11 +73,15 @@ func managedJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func readManagedJSON(w http.ResponseWriter, r *http.Request, in any) (int, string) {
+	return readBoundedJSON(w, r, in, managedBodyLimit)
+}
+
+func readBoundedJSON(w http.ResponseWriter, r *http.Request, in any, limit int64) (int, string) {
 	media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if media != "application/json" {
 		return http.StatusUnsupportedMediaType, "需要 application/json。"
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, managedBodyLimit))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(in); err != nil {
 		var tooBig *http.MaxBytesError

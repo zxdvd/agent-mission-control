@@ -47,7 +47,8 @@ type ManagedInput struct {
 
 func (s *Store) initManaged() error {
 	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS managed_tasks (task_id TEXT PRIMARY KEY, data TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS managed_images (task_id TEXT NOT NULL, slot TEXT NOT NULL, mime TEXT NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY(task_id, slot));`)
+CREATE TABLE IF NOT EXISTS managed_images (task_id TEXT NOT NULL, slot TEXT NOT NULL, mime TEXT NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY(task_id, slot));
+CREATE TABLE IF NOT EXISTS task_attachments (task_id TEXT NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY(task_id, position));`)
 	return err
 }
 
@@ -128,7 +129,7 @@ func (m *ManagedState) Available(t Task, runner, owner string) (start, followUp 
 		return false, false
 	}
 	if len(m.Turns) == 0 {
-		return ValidFreshTaskBrief(t) && len(t.Events) == 1 && t.Events[0].Kind == "local_created", false
+		return validFreshTaskBrief(t, m.HasInitial) && len(t.Events) == 1 && t.Events[0].Kind == "local_created", false
 	}
 	if m.Runner != runner || len(m.Turns) >= managedTurnLimit {
 		return false, false

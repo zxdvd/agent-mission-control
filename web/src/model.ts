@@ -11,7 +11,7 @@ export type PreviousDeliveryEvidence={run_id:string;report_event_id:string;repor
 export type PreviousEvidenceUnretained={run_id:string;report_event_id:string;reason:'task_size_limit'};
 export type LocalVisibility={revision?:string;run_id:string;state:'hidden'|'visible';recorded_at:string;last_report_event_id:string;launch_notice_recorded_at:string};
 export type PreviousBlockedAttempt={run_id:string;report_event_id:string;codex_start:CodexStartObservation;evidence:Evidence[]};
-export type Task={local_visibility?:LocalVisibility|null;previous_blocked_attempts?:PreviousBlockedAttempt[];project_name?:string;previous_evidence_unretained?:PreviousEvidenceUnretained|null;previous_delivery_evidence?:PreviousDeliveryEvidence|null;local_follow_up?:LocalFollowUp|null;delivery_review?:DeliveryReview|null;codex_launch_notice?:CodexLaunchNotice|null;codex_start?:CodexStartObservation|null;codex_binding?:CodexBinding|null;source?:string;origin?:string;id:string;project_id:string;title:string;goal:string;status:string;run_id:string;summary:string;updated_at:string;observed_at:string;evidence:Evidence[];decision:{question:string;options:string[]}|null;follow_up_count:number;events:{origin?:string;id:string;kind:string;message:string;run_id:string;created_at:string}[];commands:Command[]};
+export type Task={attachments?:{name:string;size_bytes:number}[];local_visibility?:LocalVisibility|null;previous_blocked_attempts?:PreviousBlockedAttempt[];project_name?:string;previous_evidence_unretained?:PreviousEvidenceUnretained|null;previous_delivery_evidence?:PreviousDeliveryEvidence|null;local_follow_up?:LocalFollowUp|null;delivery_review?:DeliveryReview|null;codex_launch_notice?:CodexLaunchNotice|null;codex_start?:CodexStartObservation|null;codex_binding?:CodexBinding|null;source?:string;origin?:string;id:string;project_id:string;title:string;goal:string;status:string;run_id:string;summary:string;updated_at:string;observed_at:string;evidence:Evidence[];decision:{question:string;options:string[]}|null;follow_up_count:number;events:{origin?:string;id:string;kind:string;message:string;run_id:string;created_at:string}[];commands:Command[]};
 export const states:Record<string,[string,string]>={not_started:['尚未开始 · 等执行回报','gray'],working:['进行中','green'],needs_decision:['需要你的决定','amber'],needs_evidence:['交付待补齐','amber'],ready:['证据已就绪 · 待审','green'],done:['已完成','gray'],unknown:['当前状态未知','gray'],failed:['执行遇到问题','amber'],blocked:['执行受阻','amber'],paused:['已暂停','gray']};
 export const pending=(task:Task)=>task.commands?.some(c=>c.status==='recorded');
 export const answered=(task:Task)=>!!task.decision&&task.commands?.some(c=>c.kind==='decision'&&c.run_id===task.run_id&&c.question===task.decision?.question);
@@ -53,7 +53,10 @@ export function taskBadge(task:Task):[string,string] {
  return states[task.status]||['状态待核实','gray'];
 }
 
-export const taskOrigin=(task:Task)=>task.source==='local'?`本地工作 · 来源（填报）：${task.origin||'未说明'}`:task.source==='synthetic'||task.project_id==='demo'?'合成演示 · 非真实执行':'来源未记录 · 真实性未核实';
+export function taskOrigin(task:Task):string {
+ if(task.source==='local')return task.origin==='工作台新建'?'本地工作 · 来源：工作台新建':`本地工作 · 来源（填报）：${task.origin||'未说明'}`;
+ return task.source==='synthetic'||task.project_id==='demo'?'合成演示 · 非真实执行':'来源未记录 · 真实性未核实';
+}
 
 // Copyable terminal examples must not treat browser/server text as shell syntax.
 export const shellArgument=(value:string)=>`'${value.replaceAll("'", "'\\''")}'`;
@@ -306,15 +309,11 @@ export function workLinkIntent(){
  };
 }
 
-// Creation remains the same local-record form; only explicit local name scopes
-// supply a default. No inference from origin, query, or legacy/demo group labels.
+// Only explicit local name scopes supply a default, never origin or query.
 export function creationProjectName(view:string):string|undefined {
  if(view==='overview')return '';
  if(!view.startsWith('project-name:'))return;
  try{const name=JSON.parse(view.slice('project-name:'.length));return typeof name==='string'&&name===name.trim()&&validProjectName(name)?name:undefined}catch{return}
-}
-export function projectNameForNewDraft(draft:{title:string;goal:string;projectName:string;touched:boolean},scopedName:string):string {
- return draft.touched||draft.title.trim()||draft.goal.trim()?draft.projectName:scopedName;
 }
 
 // Linkify only exact same-board local item URLs. Every other goal character

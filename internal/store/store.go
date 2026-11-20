@@ -172,6 +172,7 @@ type PreviousEvidenceUnretained struct {
 }
 
 type Task struct {
+	Attachments                []TaskAttachmentInfo        `json:"attachments,omitempty"`
 	LocalVisibility            *LocalVisibility            `json:"local_visibility,omitempty"`
 	PreviousBlockedAttempts    []PreviousBlockedAttempt    `json:"previous_blocked_attempts,omitempty"`
 	PreviousEvidenceUnretained *PreviousEvidenceUnretained `json:"previous_evidence_unretained,omitempty"`
@@ -223,8 +224,10 @@ func untouchedLocalRun(t Task) bool {
 	return t.Source == "local" && t.ProjectID == "local" && t.RunID != "" && t.Status == "not_started" && len(events) == 1 && (events[0].Kind == "local_retry_created" || (events[0].Kind == "local_created" && len(t.Events) == 1)) && len(t.Commands) == 0 && len(t.Evidence) == 0 && t.Decision == nil && t.CodexBinding == nil && t.CodexStart == nil && t.DeliveryReview == nil && t.LocalFollowUp == nil && t.FollowUpCount == 0 && t.PreviousDeliveryEvidence == nil && t.PreviousEvidenceUnretained == nil
 }
 
-func ValidFreshTaskBrief(t Task) bool {
-	return untouchedLocalRun(t) && strings.TrimSpace(t.Title) != "" && t.Title == strings.TrimSpace(t.Title) && utf8.ValidString(t.Title) && utf8.RuneCountInString(t.Title) <= 160 && strings.TrimSpace(t.Goal) != "" && t.Goal == strings.TrimSpace(t.Goal) && utf8.ValidString(t.Goal) && utf8.RuneCountInString(t.Goal) <= 2000
+func ValidFreshTaskBrief(t Task) bool { return validFreshTaskBrief(t, false) }
+
+func validFreshTaskBrief(t Task, allowEmptyGoal bool) bool {
+	return untouchedLocalRun(t) && strings.TrimSpace(t.Title) != "" && t.Title == strings.TrimSpace(t.Title) && utf8.ValidString(t.Title) && utf8.RuneCountInString(t.Title) <= 160 && (allowEmptyGoal || t.Goal != "") && t.Goal == strings.TrimSpace(t.Goal) && utf8.ValidString(t.Goal) && utf8.RuneCountInString(t.Goal) <= 2000
 }
 
 type Input struct {
@@ -299,6 +302,10 @@ func (s *Store) Create(in CreateInput) (Task, error) {
 }
 
 func (s *Store) CreateWithManagedImage(in CreateInput, image *ManagedImage) (Task, error) {
+	return s.createLocal(in, image, nil, false)
+}
+
+func (s *Store) createLocal(in CreateInput, image *ManagedImage, attachments []TaskAttachment, allowEmptyGoal bool) (Task, error) {
 	items, err := s.List()
 	if err != nil {
 		return Task{}, err
@@ -313,7 +320,7 @@ func (s *Store) CreateWithManagedImage(in CreateInput, image *ManagedImage) (Tas
 	if err != nil {
 		return Task{}, err
 	}
-	if in.Title == "" || in.Goal == "" || in.Origin == "" {
+	if in.Title == "" || (!allowEmptyGoal && in.Goal == "") || in.Origin == "" {
 		return Task{}, errors.New("title, goal and origin are required")
 	}
 	if utf8.RuneCountInString(in.Title) > 160 || utf8.RuneCountInString(in.Goal) > 2000 || utf8.RuneCountInString(in.Origin) > 300 {
@@ -326,6 +333,12 @@ func (s *Store) CreateWithManagedImage(in CreateInput, image *ManagedImage) (Tas
 	taskID := fmt.Sprintf("work-%x", id)
 	stamp := now()
 	t := Task{ID: taskID, ProjectID: "local", ProjectName: in.ProjectName, Title: in.Title, Goal: in.Goal, Source: "local", Origin: in.Origin, Status: "not_started", RunID: taskID + "-run-1", Summary: "已记录目标，尚未收到执行回报；不会自动启动 Agent。", UpdatedAt: stamp, Evidence: []Evidence{}, Commands: []Command{}, Events: []Event{{ID: taskID + "-e1", Kind: "local_created", Message: "本地创建工作记录，未启动执行。", RunID: taskID + "-run-1", CreatedAt: stamp, Origin: in.Origin}}}
+	if in.Goal == "" {
+		t.Summary = "已保存本地附件，尚未收到执行回报；不会自动启动 Agent。"
+	}
+	for _, file := range attachments {
+		t.Attachments = append(t.Attachments, TaskAttachmentInfo{Name: file.Name, Size: len(file.Bytes)})
+	}
 	b, err := marshalTask(&t)
 	if err != nil {
 		return Task{}, err
@@ -347,6 +360,11 @@ func (s *Store) CreateWithManagedImage(in CreateInput, image *ManagedImage) (Tas
 	}
 	if err = writeManagedImage(tx, t.ID, "initial", image); err != nil {
 		return Task{}, err
+	}
+	for i, file := range attachments {
+		if _, err = tx.Exec(`INSERT INTO task_attachments(task_id, position, name, bytes) VALUES(?,?,?,?)`, t.ID, i+1, file.Name, file.Bytes); err != nil {
+			return Task{}, err
+		}
 	}
 	return t, tx.Commit()
 }

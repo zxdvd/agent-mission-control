@@ -74,6 +74,7 @@ func handlerWithManaged(s *store.Store, worker *managedWorker) http.Handler {
 	registerLocalVisibility(m, s)
 	registerFollowUps(m, s)
 	registerManaged(m, s, worker)
+	registerTaskComposer(m, s)
 	write := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(v)

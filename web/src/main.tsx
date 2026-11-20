@@ -5,6 +5,7 @@ import { taskDetailBrief, type TaskDetailBrief } from './task-brief';
 import { codeDelivery } from './code-delivery';
 import { HerdrPanel } from './herdr-panel';
 import { CreateWork } from './create-work';
+import {composerAttachmentPath} from './composer-files';
 import { latestProjectReport } from './project-report';
 import { CodexCardControls, ManagedCodexProvider, ManagedTaskScreenshot, type ManagedDraft } from './managed-codex-panel';
 import { snapshotRefresh, watchVisibleRefresh, type SnapshotFreshness } from './refresh';
@@ -49,6 +50,12 @@ function PreviousEvidence({task}:{task:Task}){
  if(!previous)return unretained?<details key={`${task.id}:${unretained.report_event_id}`} className="detail-section previous-evidence"><summary>上一份交付证据 · 未保留</summary><p className="muted">上一份超出保存上限，未保留。这里没有旧证据副本，不影响当前交付或查看状态。</p></details>:null;
  const omitted=previous.total_count-previous.evidence.length;
  return <details key={`${task.id}:${previous.report_event_id}`} className="detail-section previous-evidence"><summary>上一份交付证据 · 历史</summary><p className="muted">仅保留上一份回报的有限快照，不是当前交付，不参与本次已查看、待审或本地跟进判断；来源仍为填报，未独立核验。</p><small>原回报 <code>{previous.report_event_id}</code> · <time dateTime={previous.reported_at}>{new Date(previous.reported_at).toLocaleString('zh-CN',{hour12:false})}</time></small><small>来源（填报）：{previous.origin||'未说明'}</small>{previous.summary&&<p>{previous.summary}{previous.summary_truncated?'（摘要已截短）':''}</p>}<p className="muted">保留 {previous.evidence.length} / {previous.total_count} 项{omitted?`；受保存上限限制，另 ${omitted} 项未保留。`:'。'}</p>{previous.evidence.map((e,i)=><div className="evidence" key={i}><span>↳</span><div className="evidence-content"><strong>{e.label?.trim()||(evidenceExcerpt(e)?'历史内联证据':'历史引用')}</strong><small className="evidence-origin">{evidenceOrigin(e)}</small>{evidenceExcerpt(e)&&<p className="evidence-excerpt">{evidenceExcerpt(e)}</p>}{evidenceLink(e)?<a href={evidenceLink(e)} target="_blank" rel="noopener noreferrer">打开历史引用 ↗</a>:e.url?<><code>{e.url}</code><small>仅显示历史引用，不会读取本地文件或自动打开。</small></>:null}</div></div>)}</details>;
+}
+function TaskAttachments({task}:{task:Task}){
+ if(!task.attachments?.length)return null;
+ return <div className="task-attachments"><small>本地附件 · 不发送给 Codex</small><ul>
+  {task.attachments.map((file,index)=>{const path=composerAttachmentPath(task.id,index);return path?<li key={path}><a href={path} download={file.name}>{file.name}</a></li>:null})}
+ </ul></div>;
 }
 function GoalText({task,tasks,onNavigate}:{task:Task;tasks:Task[];onNavigate:(id:string)=>void}){
  return <p className="detail-goal">{goalWorkLinks(task.goal,window.location).map((part,index)=>part.taskID&&tasks.some(item=>item.id===part.taskID&&item.source==='local'&&item.project_id!=='demo')?<a key={index} href={'#work='+encodeURIComponent(part.taskID)} onClick={event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;event.preventDefault();onNavigate(part.taskID!)}}>{part.text}</a>:<React.Fragment key={index}>{part.text}</React.Fragment>)}</p>;
@@ -184,7 +191,7 @@ function App(){
  <ManagedCodexProvider key={JSON.stringify([active.id,active.run_id])} task={active} drafts={managedDrafts.current}>
  <div className="detail-brief" tabIndex={-1}>
  {primaryAction&&actionSection}
- <section className="brief-section"><h3>背景 / 解决什么</h3><BackgroundText key={JSON.stringify([active.id,active.run_id,active.goal])} brief={detailBrief}/><ManagedTaskScreenshot taskID={active.id}/>{detailBrief.outcome&&<p className="brief-outcome"><small>结果（填报）</small>{detailBrief.outcome}</p>}</section>
+ <section className="brief-section"><h3>背景 / 解决什么</h3><BackgroundText key={JSON.stringify([active.id,active.run_id,active.goal])} brief={detailBrief}/><ManagedTaskScreenshot taskID={active.id}/><TaskAttachments task={active}/>{detailBrief.outcome&&<p className="brief-outcome"><small>结果（填报）</small>{detailBrief.outcome}</p>}</section>
  <section className="brief-section"><h3>如何解决</h3><p className={detailBrief.approach?'':'muted'}>{detailBrief.approach||'未单独记录解决方式'}</p></section>
  <section className="brief-section"><h3>验证了哪些</h3>{detailBrief.verification.length?<ul>{detailBrief.verification.map((item,index)=><li key={index}>{item}</li>)}</ul>:<p className="muted">未单独记录验证结果</p>}</section>
  {!primaryAction&&actionSection}
