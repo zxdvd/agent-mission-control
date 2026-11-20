@@ -7,7 +7,7 @@ import { HerdrPanel } from './herdr-panel';
 import { CreateWork } from './create-work';
 import {composerAttachmentPath} from './composer-files';
 import { latestProjectReport } from './project-report';
-import { CodexCardControls, ManagedCodexProvider, ManagedTaskScreenshot, type ManagedDraft } from './managed-codex-panel';
+import { CodexCardControls, ManagedCodexProvider, ManagedTaskContent, type ManagedDraft } from './managed-codex-panel';
 import { snapshotRefresh, watchVisibleRefresh, type SnapshotFreshness } from './refresh';
 
 import { goalWorkLinks, taskNoticeKey, hiddenLocalWork, pinLocalVisibility, localVisibilityRequest, type LocalVisibilityTarget, previousBlockedAttempts, type Project, type Task, creationProjectName, parseWorkFragment, workItemLink, workLinkIntent, pinNewAttempt, newAttemptRequest, type NewAttemptTarget, taskProjectLabel, taskProjectView, workProjectGroups, projectWorkCounts, taskBadge, pending, answered, needsDecision, evidenceLink, evidenceOrigin, evidenceExcerpt, taskOrigin, type WorkFilter, matchesWorkFilter, matchesWorkView, hiddenActiveSearchCount, matchesTaskSearch, hasWorkIssue, workIssueLabel, activeWork, endedLocalFollowUp, localFollowUpRequest, pinRowFollowUp, rowFollowUpRequest, pendingDeliveryReview, pinDeliveryReview, deliveryReviewRequest, type DeliveryReviewTarget, currentReadyReportID, reviewedDelivery, previousDeliveryEvidence, previousEvidenceUnretained, codexStartObservation, taskSummary, codexLaunchNotice } from './model';
@@ -191,7 +191,7 @@ function App(){
  <ManagedCodexProvider key={JSON.stringify([active.id,active.run_id])} task={active} drafts={managedDrafts.current}>
  <div className="detail-brief" tabIndex={-1}>
  {primaryAction&&actionSection}
- <section className="brief-section"><h3>背景 / 解决什么</h3><BackgroundText key={JSON.stringify([active.id,active.run_id,active.goal])} brief={detailBrief}/><ManagedTaskScreenshot taskID={active.id}/><TaskAttachments task={active}/>{detailBrief.outcome&&<p className="brief-outcome"><small>结果（填报）</small>{detailBrief.outcome}</p>}</section>
+ <section className="brief-section"><h3>背景 / 解决什么</h3><ManagedTaskContent taskID={active.id}><BackgroundText key={JSON.stringify([active.id,active.run_id,active.goal])} brief={detailBrief}/></ManagedTaskContent><TaskAttachments task={active}/>{detailBrief.outcome&&<p className="brief-outcome"><small>结果（填报）</small>{detailBrief.outcome}</p>}</section>
  <section className="brief-section"><h3>如何解决</h3><p className={detailBrief.approach?'':'muted'}>{detailBrief.approach||'未单独记录解决方式'}</p></section>
  <section className="brief-section"><h3>验证了哪些</h3>{detailBrief.verification.length?<ul>{detailBrief.verification.map((item,index)=><li key={index}>{item}</li>)}</ul>:<p className="muted">未单独记录验证结果</p>}</section>
  {!primaryAction&&actionSection}

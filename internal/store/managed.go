@@ -7,11 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
 
 const MaxManagedImageBytes = 4 << 20
+const MaxManagedImages = 3
+const MaxManagedParts = 16
 const managedTurnLimit = 20
 const managedOrigin = "由 Workbench 显式启动的 Codex；执行者声明的证据，未经独立验收。"
 
@@ -23,11 +26,12 @@ type ManagedImage struct {
 // Managed state is private server data. HTTP responses use an explicit
 // projection and never reveal the runner, instance marker or native UUID.
 type ManagedState struct {
-	RunID      string
-	ThreadID   string
-	Runner     string
-	HasInitial bool
-	Turns      []ManagedTurn
+	RunID        string
+	ThreadID     string
+	Runner       string
+	HasInitial   bool // legacy single screenshot
+	InitialParts []ManagedPart
+	Turns        []ManagedTurn
 }
 
 type ManagedTurn struct {
@@ -36,13 +40,92 @@ type ManagedTurn struct {
 	Message     string
 	State       string
 	Owner       string
-	ImageDigest string
+	ImageDigest string // legacy single screenshot
+	Parts       []ManagedPart
 	Reply       string
 }
 
 type ManagedInput struct {
 	ID, Kind, Message, RunID string
 	Image                    *ManagedImage
+	Parts                    []ManagedPartInput
+}
+
+// ManagedPart stores only ordered text/asset references, not image bytes.
+// Digests bind exact duplicate requests and are not exposed to the browser.
+type ManagedPart struct {
+	Text, ImageSlot, Digest string
+}
+
+type ManagedPartInput struct {
+	Text  string
+	Image *ManagedImage
+}
+
+var ErrManagedParts = errors.New("一条消息最多 3 张截图和 2000 字。文字和截图须按顺序提交。")
+
+func managedImageDigest(img *ManagedImage) string {
+	d := sha256.Sum256(img.Bytes)
+	return img.Mime + ":" + hex.EncodeToString(d[:])
+}
+
+func makeManagedParts(prefix string, in []ManagedPartInput) (parts []ManagedPart, text string, imgs int, err error) {
+	if (in != nil && len(in) == 0) || len(in) > MaxManagedParts {
+		return nil, "", 0, ErrManagedParts
+	}
+	var plain strings.Builder
+	chars := 0
+	for _, part := range in {
+		if part.Image == nil {
+			chars += utf8.RuneCountInString(part.Text)
+			if part.Text == "" || !utf8.ValidString(part.Text) || chars > 2000 {
+				return nil, "", 0, ErrManagedParts
+			}
+			plain.WriteString(part.Text)
+			parts = append(parts, ManagedPart{Text: part.Text})
+			continue
+		}
+		imgs++
+		if part.Text != "" || imgs > MaxManagedImages ||
+			(part.Image.Mime != "image/png" && part.Image.Mime != "image/jpeg") ||
+			len(part.Image.Bytes) == 0 || len(part.Image.Bytes) > MaxManagedImageBytes {
+			return nil, "", 0, ErrManagedParts
+		}
+		parts = append(parts, ManagedPart{ImageSlot: fmt.Sprintf("~%s:%d", prefix, imgs), Digest: managedImageDigest(part.Image)})
+	}
+	return parts, strings.TrimSpace(plain.String()), imgs, nil
+}
+
+func writeManagedParts(tx *sql.Tx, taskID string, parts []ManagedPart, in []ManagedPartInput) error {
+	for i, part := range parts {
+		if part.ImageSlot != "" {
+			if err := writeManagedImage(tx, taskID, part.ImageSlot, in[i].Image); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func managedHasImages(in []ManagedPart) bool {
+	for _, part := range in {
+		if part.ImageSlot != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func ValidManagedImageSlot(slot string) bool {
+	if slot == "initial" || ValidManagedRequestID(slot) {
+		return true
+	}
+	if !strings.HasPrefix(slot, "~") || len(slot) < 4 || slot[len(slot)-2] != ':' ||
+		slot[len(slot)-1] < '1' || slot[len(slot)-1] > '3' {
+		return false
+	}
+	id := slot[1 : len(slot)-2]
+	return id == "initial" || ValidManagedRequestID(id)
 }
 
 func (s *Store) initManaged() error {
@@ -129,7 +212,7 @@ func (m *ManagedState) Available(t Task, runner, owner string) (start, followUp 
 		return false, false
 	}
 	if len(m.Turns) == 0 {
-		return validFreshTaskBrief(t, m.HasInitial) && len(t.Events) == 1 && t.Events[0].Kind == "local_created", false
+		return validFreshTaskBrief(t, m.HasInitial || managedHasImages(m.InitialParts)) && len(t.Events) == 1 && t.Events[0].Kind == "local_created", false
 	}
 	if m.Runner != runner || len(m.Turns) >= managedTurnLimit {
 		return false, false
@@ -162,18 +245,27 @@ func writeManagedTask(tx *sql.Tx, t *Task) error {
 func ValidManagedRequestID(id string) bool { return followUpRequestID.MatchString(id) }
 
 func (s *Store) QueueManaged(id, runner, owner string, in ManagedInput) (bool, error) {
+	if in.Parts != nil && (in.Kind != "follow_up" || in.Image != nil || in.Message != "") {
+		return false, ErrManagedParts
+	}
+	parts, text, imgs, err := makeManagedParts(in.ID, in.Parts)
+	if err != nil {
+		return false, err
+	}
+	if in.Parts != nil {
+		in.Message = text
+	}
 	in.Message = strings.TrimSpace(in.Message)
 	if !followUpRequestID.MatchString(in.ID) || in.ID == "initial" || in.RunID == "" || runner == "" || owner == "" ||
 		!utf8.ValidString(in.Message) || utf8.RuneCountInString(in.Message) > 2000 ||
 		(in.Kind != "start" && in.Kind != "follow_up") ||
 		(in.Kind == "start" && (in.Message != "" || in.Image != nil)) ||
-		(in.Kind == "follow_up" && in.Message == "" && in.Image == nil) {
+		(in.Kind == "follow_up" && in.Message == "" && in.Image == nil && imgs == 0) {
 		return false, errors.New("invalid managed turn")
 	}
 	digest := ""
 	if in.Image != nil {
-		d := sha256.Sum256(in.Image.Bytes)
-		digest = in.Image.Mime + ":" + hex.EncodeToString(d[:])
+		digest = managedImageDigest(in.Image)
 	}
 	tx, err := s.beginManagedMutation()
 	if err != nil {
@@ -189,7 +281,7 @@ func (s *Store) QueueManaged(id, runner, owner string, in ManagedInput) (bool, e
 	}
 	for _, tr := range m.Turns {
 		if tr.ID == in.ID {
-			if tr.Kind == in.Kind && tr.Message == in.Message && tr.ImageDigest == digest {
+			if tr.Kind == in.Kind && tr.Message == in.Message && tr.ImageDigest == digest && slices.Equal(tr.Parts, parts) {
 				return false, nil // replay exposes original receipt only
 			}
 			return false, fmt.Errorf("%w: 请求编号已被别的指示使用。", ErrConflict)
@@ -213,7 +305,10 @@ func (s *Store) QueueManaged(id, runner, owner string, in ManagedInput) (bool, e
 	if err = writeManagedImage(tx, id, in.ID, in.Image); err != nil {
 		return false, err
 	}
-	m.Turns = append(m.Turns, ManagedTurn{ID: in.ID, Kind: in.Kind, Message: in.Message, Owner: owner, State: "pending", ImageDigest: digest})
+	if err = writeManagedParts(tx, id, parts, in.Parts); err != nil {
+		return false, err
+	}
+	m.Turns = append(m.Turns, ManagedTurn{ID: in.ID, Kind: in.Kind, Message: in.Message, Owner: owner, State: "pending", ImageDigest: digest, Parts: parts})
 	if err = writeManagedState(tx, id, m); err != nil {
 		return false, err
 	}
@@ -255,6 +350,9 @@ func (s *Store) ClaimManaged(id, runner, owner string) (Task, ManagedTurn, strin
 		m.Turns[i] = tr
 		if err = writeManagedState(tx, id, m); err != nil {
 			return t, ManagedTurn{}, "", "", err
+		}
+		if tr.Kind == "start" {
+			tr.Parts = m.InitialParts
 		}
 		return t, tr, m.ThreadID, slot, tx.Commit()
 	}

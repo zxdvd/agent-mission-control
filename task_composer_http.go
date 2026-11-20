@@ -10,8 +10,8 @@ import (
 	"strings"
 )
 
-// Up to one managed image plus three local files, base64 and small metadata.
-const composerBodyLimit = 14 << 20
+// Up to three managed images plus three local files, base64 and metadata.
+const composerBodyLimit = 26 << 20
 
 type taskAttachmentInput struct {
 	Name string `json:"name"`
@@ -25,6 +25,7 @@ func registerTaskComposer(m *http.ServeMux, s *store.Store) {
 			return
 		}
 		var in struct {
+			Parts       []managedPartInput    `json:"parts"`
 			Goal        string                `json:"goal"`
 			ProjectName string                `json:"project_name"`
 			Image       *managedImageInput    `json:"image"`
@@ -36,6 +37,15 @@ func registerTaskComposer(m *http.ServeMux, s *store.Store) {
 		}
 		if len(in.Attachments) > store.MaxTaskAttachments {
 			writeMutationError(w, store.ErrTaskAttachments.Error(), http.StatusBadRequest)
+			return
+		}
+		if in.Parts != nil && (in.Image != nil || in.Goal != "") {
+			writeMutationError(w, store.ErrManagedParts.Error(), http.StatusBadRequest)
+			return
+		}
+		parts, _, err := validatedManagedParts(in.Parts)
+		if err != nil {
+			writeMutationError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		image, err := validatedManagedImage(in.Image)
@@ -56,10 +66,15 @@ func registerTaskComposer(m *http.ServeMux, s *store.Store) {
 			}
 			local = append(local, store.TaskAttachment{Name: item.Name, Bytes: b})
 		}
-		task, err := s.ComposeTask(in.Goal, in.ProjectName, image, local)
+		var task store.Task
+		if parts == nil {
+			task, err = s.ComposeTask(in.Goal, in.ProjectName, image, local)
+		} else {
+			task, err = s.ComposeTaskParts(in.ProjectName, parts, local)
+		}
 		if err != nil {
 			switch {
-			case errors.Is(err, store.ErrEmptyTaskComposer), errors.Is(err, store.ErrLongTaskComposer), errors.Is(err, store.ErrTaskAttachments):
+			case errors.Is(err, store.ErrEmptyTaskComposer), errors.Is(err, store.ErrLongTaskComposer), errors.Is(err, store.ErrTaskAttachments), errors.Is(err, store.ErrManagedParts):
 				writeMutationError(w, err.Error(), http.StatusBadRequest)
 			default:
 				code, message := safeMutationError(err)

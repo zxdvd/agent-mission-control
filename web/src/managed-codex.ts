@@ -1,3 +1,4 @@
+import type {InlineDraftPart,InlineSavedPart} from './inline-message.ts';
 export const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024;
 export const FOLLOW_UP_LIMIT = 2000;
 export type ScreenshotMime = 'image/png' | 'image/jpeg';
@@ -5,10 +6,10 @@ export type ScreenshotInput = {mime_type: ScreenshotMime; data_base64: string};
 export type ManagedMode = 'read_only' | 'no_sandbox';
 export type ManagedAction = 'start' | 'follow_up';
 export type ManagedState = 'pending' | 'running' | 'completed' | 'blocked' | 'uncertain';
-export type ManagedTurn = {id: string; kind: ManagedAction; state: ManagedState; message?: string; image_url?: string; reply?: string};
-export type ManagedSnapshot = {mode?: ManagedMode; run_id: string; enabled: boolean; managed: boolean; can_start: boolean; can_follow_up: boolean; initial_image_url?: string; turns: ManagedTurn[]};
+export type ManagedTurn = {id: string; kind: ManagedAction; state: ManagedState; message?: string; image_url?: string; parts?: InlineSavedPart[]; reply?: string};
+export type ManagedSnapshot = {mode?: ManagedMode; run_id: string; enabled: boolean; managed: boolean; can_start: boolean; can_follow_up: boolean; initial_image_url?: string; initial_parts?: InlineSavedPart[]; turns: ManagedTurn[]};
 export type ManagedReceipt = {action: ManagedAction; request_id: string; mode?: 'no_sandbox'};
-export type ManagedRequest = ManagedReceipt & {run_id: string; message?: string; image?: ScreenshotInput};
+export type ManagedRequest = ManagedReceipt & {run_id: string; message?: string; image?: ScreenshotInput; parts?: InlineDraftPart[]};
 
 export function screenshotError(file: {type: string; size: number}): string {
  if (file.type !== 'image/png' && file.type !== 'image/jpeg') return '只支持 PNG 或 JPEG 截图。';
@@ -37,7 +38,7 @@ export function managedImageURL(taskID: string, value?: string): string | undefi
  const path = managedPath(taskID) + '/images/';
  if (typeof value !== 'string' || !value.startsWith(path)) return;
  const key = value.slice(path.length);
- return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(key) ? value : undefined;
+ return /^(?:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}|~[A-Za-z0-9][A-Za-z0-9._:-]{0,127}:[1-3])$/.test(key) ? value : undefined;
 }
 
 export function parseManagedReceipt(raw: string | null): ManagedReceipt | undefined {
@@ -49,10 +50,11 @@ export function parseManagedReceipt(raw: string | null): ManagedReceipt | undefi
  } catch {/* Old or invalid session data is not a receipt. */}
 }
 
-export function managedRequest(receipt: ManagedReceipt, runID: string, message: string, image?: ScreenshotInput): ManagedRequest {
+export function managedRequest(receipt: ManagedReceipt, runID: string, message: string, image?: ScreenshotInput, parts?: InlineDraftPart[]): ManagedRequest {
  const target = {action: receipt.action, request_id: receipt.request_id, run_id: runID,
   ...(receipt.mode ? {mode: receipt.mode} : {})};
  if (receipt.action === 'start') return target;
+ if(parts?.some(part=>'image' in part))return {...target,parts};
  const text = message.trim();
  return {...target, ...(text ? {message: text} : {}), ...(image ? {image} : {})};
 }

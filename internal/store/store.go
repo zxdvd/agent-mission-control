@@ -302,10 +302,10 @@ func (s *Store) Create(in CreateInput) (Task, error) {
 }
 
 func (s *Store) CreateWithManagedImage(in CreateInput, image *ManagedImage) (Task, error) {
-	return s.createLocal(in, image, nil, false)
+	return s.createLocal(in, image, nil, nil, nil, false)
 }
 
-func (s *Store) createLocal(in CreateInput, image *ManagedImage, attachments []TaskAttachment, allowEmptyGoal bool) (Task, error) {
+func (s *Store) createLocal(in CreateInput, image *ManagedImage, parts []ManagedPart, partInputs []ManagedPartInput, attachments []TaskAttachment, allowEmptyGoal bool) (Task, error) {
 	items, err := s.List()
 	if err != nil {
 		return Task{}, err
@@ -351,7 +351,7 @@ func (s *Store) createLocal(in CreateInput, image *ManagedImage, attachments []T
 	if _, err = tx.Exec(`INSERT INTO tasks VALUES(?,?)`, t.ID, string(b)); err != nil {
 		return Task{}, err
 	}
-	managed, err := json.Marshal(ManagedState{RunID: t.RunID, HasInitial: image != nil})
+	managed, err := json.Marshal(ManagedState{RunID: t.RunID, HasInitial: image != nil, InitialParts: parts})
 	if err != nil {
 		return Task{}, err
 	}
@@ -359,6 +359,9 @@ func (s *Store) createLocal(in CreateInput, image *ManagedImage, attachments []T
 		return Task{}, err
 	}
 	if err = writeManagedImage(tx, t.ID, "initial", image); err != nil {
+		return Task{}, err
+	}
+	if err = writeManagedParts(tx, t.ID, parts, partInputs); err != nil {
 		return Task{}, err
 	}
 	for i, file := range attachments {

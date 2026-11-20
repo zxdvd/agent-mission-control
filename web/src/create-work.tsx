@@ -1,22 +1,23 @@
-import {useId,useRef,useState,type ClipboardEvent,type DragEvent,type FormEvent} from 'react';
+import {useId,useRef,useState,type DragEvent,type FormEvent} from 'react';
 import {type Task,validProjectName} from './model';
-import {screenshotPreview,type ScreenshotInput} from './managed-codex';
+import {InlineEditor,type InlineEditorHandle} from './inline-editor';
+import {inlineText,inlineImageCount,MAX_INLINE_IMAGES,type InlineDraftPart} from './inline-message';
 import {composerFileBase64,composerHasFiles,composerTransferFiles,planComposerFiles,type LocalFileInput} from './composer-files';
 
-type DraftImage={name:string;input:ScreenshotInput};
 type DraftFile=LocalFileInput&{key:number};
 
 export function CreateWork({onCreated,defaultProjectName=''}:{onCreated:(task:Task)=>void;defaultProjectName?:string}) {
- const [goal,setGoal]=useState(''),[projectName,setProjectName]=useState('');
- const [image,setImage]=useState<DraftImage>(),[files,setFiles]=useState<DraftFile[]>([]);
+ const [parts,setParts]=useState<InlineDraftPart[]>([]),[projectName,setProjectName]=useState('');
+ const [files,setFiles]=useState<DraftFile[]>([]);
+ const goal=inlineText(parts), imageCount=inlineImageCount(parts);
  const [busy,setBusy]=useState(false),[reading,setReading]=useState(false),[dragging,setDragging]=useState(false);
  const [fileNotes,setFileNotes]=useState<string[]>([]),[error,setError]=useState(''),[uncertain,setUncertain]=useState(false);
  const dialog=useRef<HTMLDialogElement>(null),trigger=useRef<HTMLButtonElement>(null);
- const text=useRef<HTMLTextAreaElement>(null),picker=useRef<HTMLInputElement>(null),project=useRef<HTMLDetailsElement>(null);
- const submitting=useRef(false),picking=useRef(false),touched=useRef(false),dragDepth=useRef(0),fileKey=useRef(0);
+ const text=useRef<InlineEditorHandle>(null),picker=useRef<HTMLInputElement>(null),project=useRef<HTMLDetailsElement>(null);
+ const submitting=useRef(false),picking=useRef(false),touched=useRef(false),dragDepth=useRef(0),fileKey=useRef(0),pickerAt=useRef<Range>(undefined);
  const headingID=useId(),hintID=useId(),limitsID=useId(),textID=useId();
- const goalTooLong=Array.from(goal.trim()).length>2000;
- const canSave=!uncertain&&!goalTooLong&&validProjectName(projectName)&&!!(goal.trim()||image||files.length);
+ const goalTooLong=Array.from(goal).length>2000;
+ const canSave=!uncertain&&!goalTooLong&&validProjectName(projectName)&&!!(goal.trim()||imageCount||files.length);
 
  function open() {
   if(!dialog.current||dialog.current.open)return;
@@ -29,31 +30,28 @@ export function CreateWork({onCreated,defaultProjectName=''}:{onCreated:(task:Ta
   dragDepth.current=0;setDragging(false);
   dialog.current.close();trigger.current?.focus({preventScroll:true});
  }
- async function choose(incoming:File[]) {
+ async function choose(incoming:File[],at=text.current?.capture(),clipboardText="") {
+  dragDepth.current=0;setDragging(false);
   if(!incoming.length||submitting.current)return;
   if(picking.current){setFileNotes(['正在读取上一批附件，请稍后再添加。']);return;}
-  const {accepted,errors}=planComposerFiles(incoming,!!image,files.length);
+  if(clipboardText){text.current?.insert([{text:clipboardText}],at);at=text.current?.capture();}
+  at?.collapse(false);
+  const {accepted,errors}=planComposerFiles(incoming,imageCount,files.length,MAX_INLINE_IMAGES);
   setFileNotes(errors);
   if(!accepted.length)return;
   picking.current=true;setReading(true);
-  const added:DraftFile[]=[];
+  const added:DraftFile[]=[], inline:InlineDraftPart[]=[];
   for(const {file,name,mime} of accepted){
    try{
     const data_base64=await composerFileBase64(file);
-    if(mime)setImage({name,input:{mime_type:mime,data_base64}});
+    if(mime)inline.push({image:{mime_type:mime,data_base64}});
     else added.push({name,data_base64,key:++fileKey.current});
     touched.current=true;
    }catch{errors.push(`无法读取「${name}」，未添加。`);}
   }
+  if(inline.length)text.current?.insert(inline,at,true);
   setFiles(current=>[...current,...added]);
   setFileNotes(errors);picking.current=false;setReading(false);
- }
- function paste(event:ClipboardEvent<HTMLTextAreaElement>) {
-  const incoming=composerTransferFiles(event.clipboardData);
-  if(!incoming.length)return;
-  // Let the textarea preserve the text portion of a mixed clipboard naturally.
-  if(!event.clipboardData.getData('text/plain'))event.preventDefault();
-  void choose(incoming);
  }
  function enter(event:DragEvent<HTMLDialogElement>) {
   if(!composerHasFiles(event.dataTransfer))return;
@@ -82,7 +80,7 @@ export function CreateWork({onCreated,defaultProjectName=''}:{onCreated:(task:Ta
   try{
    const response=await fetch('/api/tasks/compose',{
     method:'POST',headers:{'Content-Type':'application/json'},signal:AbortSignal.timeout(15000),body:JSON.stringify({
-     goal,project_name:projectName.trim(),...(image?{image:image.input}:{}),
+     project_name:projectName.trim(),...(imageCount?{parts}:{goal}),
      ...(files.length?{attachments:files.map(({name,data_base64})=>({name,data_base64}))}:{}),
     }),
    });
@@ -90,7 +88,7 @@ export function CreateWork({onCreated,defaultProjectName=''}:{onCreated:(task:Ta
    if(!response.ok&&response.status>=400&&response.status<500){setError(data?.error||`无法保存 (${response.status})。`);return;}
    if(response.status!==201||!data?.id)throw new Error('未确认回执');
    submitting.current=false;close();
-   setGoal('');setProjectName('');setImage(undefined);setFiles([]);setFileNotes([]);touched.current=false;
+   setParts([]);setProjectName('');setFiles([]);setFileNotes([]);touched.current=false;
    if(project.current)project.current.open=false;
    onCreated(data as Task);
   }catch{setUncertain(true);setError('未能确认是否已保存。为避免重复创建，已停止保存此草稿。请关闭弹窗，重新加载页面并核对列表。');}
@@ -105,26 +103,23 @@ export function CreateWork({onCreated,defaultProjectName=''}:{onCreated:(task:Ta
    <form onSubmit={event=>void submit(event)} aria-busy={busy}>
     <fieldset disabled={busy}>
      <div className={'new-work-composer'+(dragging?' drop-target':'')}>
-      <label className="visually-hidden" htmlFor={textID}>任务内容</label>
-      <textarea ref={text} id={textID} rows={5} aria-describedby={limitsID} aria-invalid={goalTooLong||undefined} value={goal} onPaste={paste}
-       onChange={event=>{touched.current=true;setGoal(event.currentTarget.value)}}
-       placeholder="告诉我你想做什么。可直接粘贴图片，或把图片和文件拖到这里。"/>
-      {(image||files.length>0)&&<ul className="new-work-attachments" aria-label="待保存附件">
-       {image&&<li><img src={screenshotPreview(image.input)} alt=""/><div><span title={image.name}>{image.name}</span><small>截图 · 仅在只读模式执行时发送给 Codex</small></div>
-        <button type="button" disabled={reading} aria-label={`移除 ${image.name}`} onClick={()=>{setImage(undefined);setFileNotes([]);text.current?.focus()}}>✕</button></li>}
+      <InlineEditor editorRef={text} id={textID} label="任务内容" describedBy={limitsID} invalid={goalTooLong}
+       parts={parts} onChange={next=>{touched.current=true;setParts(next)}} onFiles={(incoming,at,plain)=>void choose(incoming,at,plain)}
+       disabled={busy} placeholder="告诉我你想做什么。可在文字中粘贴图片，或拖入附件。"/>
+      {files.length>0&&<ul className="new-work-attachments" aria-label="待保存附件">
        {files.map(file=><li key={file.key}><div><span title={file.name}>{file.name}</span><small>仅本机 · 不发送给 Codex</small></div>
         <button type="button" disabled={reading} aria-label={`移除 ${file.name}`} onClick={()=>{setFiles(current=>current.filter(item=>item.key!==file.key));setFileNotes([]);text.current?.focus()}}>✕</button></li>)}
       </ul>}
       <div className="new-work-toolbar">
        <input ref={picker} type="file" hidden multiple onChange={event=>{
-        const incoming=Array.from(event.currentTarget.files??[]);event.currentTarget.value='';void choose(incoming);
+        const incoming=Array.from(event.currentTarget.files??[]);event.currentTarget.value='';void choose(incoming,pickerAt.current);
        }}/>
-       <button type="button" className="attach-button" disabled={reading} aria-label="添加附件" title="添加附件" onClick={()=>picker.current?.click()}>＋</button>
+       <button type="button" className="attach-button" disabled={reading} aria-label="添加附件" title="添加附件" onClick={()=>{pickerAt.current=text.current?.capture();picker.current?.click()}}>＋</button>
        <button className="primary" type="submit" disabled={reading||!canSave}>{busy?'保存中…':'保存工作'}</button>
       </div>
      </div>
-     <small id={limitsID} className="new-work-limits">只读模式可将一张 PNG / JPEG 截图（4 MiB）交给 Codex；另可附 3 个仅保存在本机的文件（每个 2 MiB）。</small>
-     {!goal.trim()&&!image&&files.length>0&&<small>只有本地附件时仍可保存，但不能从卡内启动 Codex。</small>}
+     <small id={limitsID} className="new-work-limits">最多 3 张 PNG / JPEG 截图（每张 4 MiB），会保留在插入位置；另可附 3 个仅保存在本机的文件（每个 2 MiB）。</small>
+     {!goal.trim()&&!imageCount&&files.length>0&&<small>只有本地附件时仍可保存，但不能从卡内启动 Codex。</small>}
      {reading&&<small role="status">正在读取附件…</small>}
      {goalTooLong&&<p className="error" role="alert">任务内容最多 2000 字。</p>}
      {fileNotes.length>0&&<p className="error" role="alert">{fileNotes.join(' ')}</p>}

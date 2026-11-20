@@ -20,11 +20,62 @@ import (
 	"unicode/utf8"
 )
 
-const managedBodyLimit = 6 << 20
+const managedBodyLimit = 6 << 20      // legacy task creation
+const managedTurnBodyLimit = 18 << 20 // three base64 screenshots plus text
 
 type managedImageInput struct {
 	Mime string `json:"mime_type"`
 	Data string `json:"data_base64"`
+}
+
+type managedPartInput struct {
+	Text  *string            `json:"text"`
+	Image *managedImageInput `json:"image"`
+}
+
+func validatedManagedParts(in []managedPartInput) ([]store.ManagedPartInput, string, error) {
+	if in == nil {
+		return nil, "", nil
+	}
+	if len(in) == 0 || len(in) > store.MaxManagedParts {
+		return nil, "", store.ErrManagedParts
+	}
+	images, chars := 0, 0
+	var plain strings.Builder
+	for _, p := range in {
+		switch {
+		case p.Text != nil && p.Image == nil:
+			chars += utf8.RuneCountInString(*p.Text)
+			if *p.Text == "" || chars > 2000 || !utf8.ValidString(*p.Text) {
+				return nil, "", store.ErrManagedParts
+			}
+			plain.WriteString(*p.Text)
+		case p.Image != nil && p.Text == nil:
+			images++
+			if images > store.MaxManagedImages {
+				return nil, "", store.ErrManagedParts
+			}
+		default:
+			return nil, "", store.ErrManagedParts
+		}
+	}
+	text := strings.TrimSpace(plain.String())
+	if text == "" && images == 0 {
+		return nil, "", store.ErrManagedParts
+	}
+	result := make([]store.ManagedPartInput, 0, len(in))
+	for _, p := range in {
+		if p.Text != nil {
+			result = append(result, store.ManagedPartInput{Text: *p.Text})
+			continue
+		}
+		img, err := validatedManagedImage(p.Image)
+		if err != nil {
+			return nil, "", err
+		}
+		result = append(result, store.ManagedPartInput{Image: img})
+	}
+	return result, text, nil
 }
 
 func validatedManagedImage(in *managedImageInput) (*store.ManagedImage, error) {
@@ -74,7 +125,7 @@ func managedJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func readManagedJSON(w http.ResponseWriter, r *http.Request, in any) (int, string) {
-	return readBoundedJSON(w, r, in, managedBodyLimit)
+	return readBoundedJSON(w, r, in, managedTurnBodyLimit)
 }
 
 func readBoundedJSON(w http.ResponseWriter, r *http.Request, in any, limit int64) (int, string) {
@@ -98,15 +149,34 @@ func readBoundedJSON(w http.ResponseWriter, r *http.Request, in any, limit int64
 	return 0, ""
 }
 
-type managedTurnView struct {
-	ID       string `json:"id"`
-	Kind     string `json:"kind"`
-	Message  string `json:"message"`
-	State    string `json:"state"`
+type managedPartView struct {
+	Text     string `json:"text,omitempty"`
 	ImageURL string `json:"image_url,omitempty"`
-	Reply    string `json:"reply,omitempty"`
+}
+
+func managedPartViews(task string, parts []store.ManagedPart) []managedPartView {
+	var result []managedPartView
+	for _, p := range parts {
+		if p.ImageSlot != "" {
+			result = append(result, managedPartView{ImageURL: managedImageLink(task, p.ImageSlot)})
+		} else {
+			result = append(result, managedPartView{Text: p.Text})
+		}
+	}
+	return result
+}
+
+type managedTurnView struct {
+	Parts    []managedPartView `json:"parts,omitempty"`
+	ID       string            `json:"id"`
+	Kind     string            `json:"kind"`
+	Message  string            `json:"message"`
+	State    string            `json:"state"`
+	ImageURL string            `json:"image_url,omitempty"`
+	Reply    string            `json:"reply,omitempty"`
 }
 type managedView struct {
+	InitialParts    []managedPartView `json:"initial_parts,omitempty"`
 	Mode            string            `json:"mode,omitempty"`
 	Enabled         bool              `json:"enabled"`
 	Managed         bool              `json:"managed"`
@@ -135,15 +205,16 @@ func managedReadView(s *store.Store, worker *managedWorker, id string) (managedV
 	if state.HasInitial {
 		v.InitialImageURL = managedImageLink(id, "initial")
 	}
+	v.InitialParts = managedPartViews(id, state.InitialParts)
 	v.Managed = len(state.Turns) != 0
 	if worker != nil {
 		v.CanStart, v.CanFollowUp = state.Available(t, worker.runner, worker.owner)
-		if worker.noSandbox && state.HasInitial {
+		if worker.noSandbox && strings.TrimSpace(t.Goal) == "" {
 			v.CanStart = false
 		}
 	}
 	for _, turn := range state.Turns {
-		item := managedTurnView{ID: turn.ID, Kind: turn.Kind, Message: turn.Message, State: turn.State, Reply: turn.Reply}
+		item := managedTurnView{ID: turn.ID, Kind: turn.Kind, Message: turn.Message, State: turn.State, Reply: turn.Reply, Parts: managedPartViews(id, turn.Parts)}
 		if turn.ImageDigest != "" {
 			item.ImageURL = managedImageLink(id, turn.ID)
 		}
@@ -182,6 +253,7 @@ func registerManaged(m *http.ServeMux, s *store.Store, worker *managedWorker) {
 			return
 		}
 		var in struct {
+			Parts   []managedPartInput `json:"parts"`
 			Mode    string             `json:"mode"`
 			Action  string             `json:"action"`
 			ID      string             `json:"request_id"`
@@ -196,8 +268,9 @@ func registerManaged(m *http.ServeMux, s *store.Store, worker *managedWorker) {
 		if in.RunID == "" || len(in.RunID) > 250 || !managedRequestID(in.ID) ||
 			!utf8.ValidString(in.Message) || utf8.RuneCountInString(in.Message) > 2000 ||
 			(in.Action != "start" && in.Action != "follow_up") ||
-			(in.Action == "start" && (strings.TrimSpace(in.Message) != "" || in.Image != nil)) ||
-			(in.Action == "follow_up" && strings.TrimSpace(in.Message) == "" && in.Image == nil) {
+			(in.Action == "start" && (strings.TrimSpace(in.Message) != "" || in.Image != nil || in.Parts != nil)) ||
+			(in.Parts != nil && (in.Image != nil || in.Message != "")) ||
+			(in.Action == "follow_up" && strings.TrimSpace(in.Message) == "" && in.Image == nil && in.Parts == nil) {
 			writeMutationError(w, "缺少当前执行编号、请求编号，或指示为空/超过 2000 字。", http.StatusBadRequest)
 			return
 		}
@@ -213,26 +286,32 @@ func registerManaged(m *http.ServeMux, s *store.Store, worker *managedWorker) {
 				return
 			}
 			if in.Action == "start" {
-				task, state, err := s.ManagedSnapshot(id)
+				task, _, err := s.ManagedSnapshot(id)
 				if err != nil {
 					managedWriteError(w, err)
 					return
 				}
-				if strings.TrimSpace(task.Goal) == "" || (state != nil && state.HasInitial) {
-					writeMutationError(w, "无沙箱模式仅处理文字任务。请新建不含截图的文字事项，或重启工作台使用只读模式。", http.StatusConflict)
+				if strings.TrimSpace(task.Goal) == "" {
+					writeMutationError(w, "无沙箱模式须有明确的文字指示；截图只能作为参考。", http.StatusConflict)
 					return
 				}
-			} else if in.Image != nil {
-				writeMutationError(w, "无沙箱模式不发送截图。请只提交文字补充。", http.StatusConflict)
-				return
 			}
+		}
+		parts, text, err := validatedManagedParts(in.Parts)
+		if err != nil {
+			writeMutationError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if worker.noSandbox && in.Action == "follow_up" && strings.TrimSpace(in.Message) == "" && text == "" {
+			writeMutationError(w, "无沙箱模式须有明确的文字指示；截图只能作为参考。", http.StatusConflict)
+			return
 		}
 		img, err := validatedManagedImage(in.Image)
 		if err != nil {
 			writeMutationError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		added, err := s.QueueManaged(id, worker.runner, worker.owner, store.ManagedInput{ID: in.ID, RunID: in.RunID, Kind: in.Action, Message: in.Message, Image: img})
+		added, err := s.QueueManaged(id, worker.runner, worker.owner, store.ManagedInput{ID: in.ID, RunID: in.RunID, Kind: in.Action, Message: in.Message, Image: img, Parts: parts})
 		if err != nil {
 			managedWriteError(w, err)
 			return
@@ -250,7 +329,7 @@ func registerManaged(m *http.ServeMux, s *store.Store, worker *managedWorker) {
 			return
 		}
 		slot := r.PathValue("slot")
-		if slot != "initial" && !managedRequestID(slot) {
+		if !store.ValidManagedImageSlot(slot) {
 			http.NotFound(w, r)
 			return
 		}

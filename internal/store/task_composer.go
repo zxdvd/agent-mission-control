@@ -29,8 +29,24 @@ type TaskAttachmentInfo struct {
 // ComposeTask records a browser draft without running anything. Non-image files
 // stay in a separate SQLite table and are never provided to an execution path.
 func (s *Store) ComposeTask(goal, projectName string, image *ManagedImage, attachments []TaskAttachment) (Task, error) {
+	return s.composeTask(goal, projectName, image, nil, attachments)
+}
+
+func (s *Store) ComposeTaskParts(projectName string, in []ManagedPartInput, attachments []TaskAttachment) (Task, error) {
+	return s.composeTask("", projectName, nil, in, attachments)
+}
+
+func (s *Store) composeTask(goal, projectName string, image *ManagedImage, in []ManagedPartInput, attachments []TaskAttachment) (Task, error) {
+	parts, plain, images, err := makeManagedParts("initial", in)
+	if err != nil {
+		return Task{}, err
+	}
+	if in != nil {
+		goal = plain
+	}
+	hasImages := image != nil || images > 0
 	goal = strings.TrimSpace(goal)
-	if goal == "" && image == nil && len(attachments) == 0 {
+	if goal == "" && !hasImages && len(attachments) == 0 {
 		return Task{}, ErrEmptyTaskComposer
 	}
 	if !utf8.ValidString(goal) || utf8.RuneCountInString(goal) > 2000 {
@@ -49,7 +65,7 @@ func (s *Store) ComposeTask(goal, projectName string, image *ManagedImage, attac
 			return Task{}, ErrTaskAttachments
 		}
 	}
-	return s.createLocal(CreateInput{ProjectName: projectName, Title: composerTitle(goal, image != nil), Goal: goal, Origin: WorkbenchCreateOrigin}, image, attachments, true)
+	return s.createLocal(CreateInput{ProjectName: projectName, Title: composerTitle(goal, hasImages), Goal: goal, Origin: WorkbenchCreateOrigin}, image, parts, in, attachments, true)
 }
 
 func composerTitle(goal string, hasImage bool) string {

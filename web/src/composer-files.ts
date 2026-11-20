@@ -15,19 +15,21 @@ function imageMime(file:InputFile):ImageMime|undefined {
  }
 }
 
-export function planComposerFiles<T extends InputFile>(files:Iterable<T>,hasImage:boolean,localCount:number) {
+export function planComposerFiles<T extends InputFile>(files:Iterable<T>,hasImage:boolean|number,localCount:number,maxImages=1) {
  const accepted:{file:T;name:string;mime?:ImageMime}[]=[];
  const errors=new Set<string>();
+ let imageCount=Number(hasImage);
  for(const file of files){
   const mime=imageMime(file),name=file.name.trim()||(mime?'截图':'');
   if(!name||name==='.'||name==='..'||Array.from(name).length>160||/[/\\\p{Cc}\p{Bidi_Control}]/u.test(name)){
    errors.add('有附件的文件名无效，未添加。');continue;
   }
   if(!file.size){errors.add('空文件未添加。');continue;}
-  if(mime&&!hasImage){
+  if(mime&&imageCount<maxImages){
    if(file.size>MAX_SCREENSHOT_BYTES){errors.add('截图超过 4 MiB，未添加。');continue;}
-   accepted.push({file,name,mime});hasImage=true;continue;
+   accepted.push({file,name,mime});imageCount++;continue;
   }
+  if(mime&&maxImages>1){errors.add('每条最多 3 张截图，超出的未添加。');continue;}
   if(localCount>=MAX_LOCAL_FILES){errors.add('本地文件最多 3 个，超出的未添加。');continue;}
   if(file.size>MAX_LOCAL_FILE_BYTES){errors.add('本地文件超过 2 MiB，未添加。');continue;}
   accepted.push({file,name});localCount++;

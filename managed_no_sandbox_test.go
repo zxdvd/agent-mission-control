@@ -3,6 +3,7 @@ package main
 import (
 	"agentworkbench/internal/store"
 	"context"
+	"encoding/json"
 	"image/color"
 	"net/http"
 	"os"
@@ -59,7 +60,12 @@ func TestManagedNoSandboxRequiresExactModeAndLocalUnlockForTextOnly(t *testing.T
 
 	origin := "http://127.0.0.1:18819"
 	task := managedTestTask(t, h, nil)
-	withScreenshot := managedTestTask(t, h, managedTestImage(managedPNG(t, color.RGBA{1, 2, 3, 255})))
+	onlyImage := map[string]any{"parts": []map[string]any{{"image": managedTestImage(managedPNG(t, color.RGBA{1, 2, 3, 255}))}}}
+	created := managedRequest(t, h, "POST", "/api/tasks/compose", origin, onlyImage)
+	var withScreenshot store.Task
+	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &withScreenshot) != nil {
+		t.Fatalf("image-only save: %d %s", created.Code, created.Body.String())
+	}
 	path := "/api/tasks/" + task.ID + "/managed"
 	imgPath := "/api/tasks/" + withScreenshot.ID + "/managed"
 	get := managedRequest(t, h, "GET", path, "", nil)
@@ -67,7 +73,7 @@ func TestManagedNoSandboxRequiresExactModeAndLocalUnlockForTextOnly(t *testing.T
 	if !v.CanStart || v.Mode != managedNoSandboxMode || strings.Contains(get.Body.String(), worker.runCode) {
 		t.Fatal("unexpected no-sandbox projection")
 	}
-	if v := managedTestView(t, managedRequest(t, h, "GET", imgPath, "", nil)); v.CanStart || v.InitialImageURL == "" {
+	if v := managedTestView(t, managedRequest(t, h, "GET", imgPath, "", nil)); v.CanStart || len(v.InitialParts) != 1 || v.InitialParts[0].ImageURL == "" {
 		t.Fatal("saved screenshot should not be executable in no-sandbox mode")
 	}
 	start := map[string]string{"action": "start", "run_id": task.RunID, "request_id": "exact-start"}
@@ -107,11 +113,12 @@ func TestManagedNoSandboxRequiresExactModeAndLocalUnlockForTextOnly(t *testing.T
 	if readOnlyProjection.Mode != managedReadOnlyMode || readOnlyProjection.CanFollowUp {
 		t.Fatal("permission mode could change across continuation")
 	}
-	follow := map[string]any{"action": "follow_up", "run_id": task.RunID, "request_id": "exact-follow-up", "mode": managedNoSandboxMode, "message": "Write the authorized fix", "image": managedTestImage(managedPNG(t, color.RGBA{4, 5, 6, 255}))}
+	follow := map[string]any{"action": "follow_up", "run_id": task.RunID, "request_id": "exact-follow-up", "mode": managedNoSandboxMode, "image": managedTestImage(managedPNG(t, color.RGBA{4, 5, 6, 255}))}
 	if w := managedRequest(t, h, "POST", path, origin, follow, worker.runCode); w.Code != http.StatusConflict {
 		t.Fatalf("no-sandbox screenshot follow-up accepted: %d", w.Code)
 	}
 	delete(follow, "image")
+	follow["message"] = "Write the authorized fix"
 	if w := managedRequest(t, h, "POST", path, origin, follow); w.Code != http.StatusForbidden {
 		t.Fatalf("follow-up without unlock accepted: %d", w.Code)
 	}
