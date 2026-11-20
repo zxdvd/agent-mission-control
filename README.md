@@ -58,7 +58,7 @@ agent-workbench follow-up-worker -watch -db /absolute/path/workbench.db \
 
 ### 仅在明确授权的本机环境中使用无沙箱模式
 
-需要 Codex 修改文件时，默认仍建议保留隔离；只有已明确授权且环境符合组织要求，才在本机前台启动命令加入 **-managed-no-sandbox**。仍须提供 -managed-codex-home、-managed-cwd 和 -ack-vetted-runner。指定目录是起始工作目录，不是访问边界。此模式使用 Codex 的 danger-full-access 沙箱级别，不覆盖正常审批设置、项目规则或组织策略。始终核对并只使用已信任的专用 Codex 主目录、配置和二进制。需要 6.2 Sol / xhigh 时，在已审查的专用 Codex 主目录的 config.toml 中设置 model = "gpt-6.2-sol" 与 model_reasoning_effort = "xhigh"；工作台不写入配置、不复制凭据、不改变审批设置。
+需要 Codex 修改文件时，默认仍建议保留隔离；只有已明确授权且环境符合组织要求，才在本机前台启动命令加入 **-managed-no-sandbox**。仍须提供 -managed-codex-home、-managed-cwd 和 -ack-vetted-runner。指定目录是起始工作目录，不是访问边界。此模式使用 Codex 的 danger-full-access 沙箱级别，不覆盖正常审批设置、项目规则或组织策略。已在本机 Codex 登录时，可显式传 `-managed-codex-home "$HOME/.codex"`，复用当前账号的全局配置和已有登录，无须第二份 profile 或重新登录。不设置该参数不会自动回退到全局目录。全局配置中的模型、推理强度、MCP、应用、插件、hooks 和规则都可能对执行生效，请先核对。工作台不写入配置、不复制凭据、不改变审批设置；也不接管已有线程。
 
 只用本机地址并保留启动终端私密，不应反向代理、端口转发或公开启动输出。把终端给出的本次执行码填入工作台当前浏览器标签页；启动码在本次服务期间可用，刷新标签页或重启服务后需重新输入。无沙箱模式只接受明确写出的文字任务和补充，含截图的事项应使用只读模式；截图不会被无声丢弃。保存、打开、刷新都不执行，必须点击「开始无沙箱执行」或「在无沙箱模式继续」。切换模式不会恢复旧模式的同一会话。使用权限最小且无无关敏感文件的本机账号，先核对任务内容；未获授权不得访问任务外文件、推送或发布。
 

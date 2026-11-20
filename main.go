@@ -385,7 +385,7 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8787", "loopback listen address")
 	db := flag.String("db", "workbench.db", "SQLite database file")
 	demo := flag.Bool("demo", false, "explicitly seed synthetic demo tasks in this database")
-	managedHome := flag.String("managed-codex-home", "", "dedicated canonical Codex home for explicit card actions")
+	managedHome := flag.String("managed-codex-home", "", "explicit canonical Codex home; the account default is accepted only with -managed-no-sandbox")
 	managedCwd := flag.String("managed-cwd", "", "dedicated canonical working directory for explicit card actions")
 	managedNoSandbox := flag.Bool("managed-no-sandbox", false, "explicitly allow managed text tasks without a Codex shell sandbox; local foreground operator unlock required")
 	ackManaged := flag.Bool("ack-vetted-runner", false, "operator confirms managed Codex home, project rules, extensions and connectors are suited to this scope")

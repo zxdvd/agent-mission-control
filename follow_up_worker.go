@@ -314,6 +314,10 @@ func followUpReply(r codexResult) string {
 // The acknowledgement is operator authorization to use a vetted environment,
 // not technical proof that arbitrary user/managed CLI configurations are safe.
 func validateFollowUpCodexHome(path string, ack bool, cwd string) (string, error) {
+	return validateVettedCodexHome(path, ack, cwd, false)
+}
+
+func validateVettedCodexHome(path string, ack bool, cwd string, allowDefault bool) (string, error) {
 	if !ack || !filepath.IsAbs(path) {
 		return "", errors.New(followUpIsolationLimitation)
 	}
@@ -326,20 +330,25 @@ func validateFollowUpCodexHome(path string, ack bool, cwd string) (string, error
 		return "", errors.New("-codex-home must be an existing dedicated directory; no profile or credentials created")
 	}
 	userHome, _ := os.UserHomeDir()
+	defaultHome := filepath.Join(userHome, ".codex")
 	ambient := os.Getenv("CODEX_HOME")
 	if ambient == "" {
-		ambient = filepath.Join(userHome, ".codex")
+		ambient = defaultHome
 	}
 	if resolved, e := filepath.EvalSymlinks(ambient); e == nil {
 		ambient = resolved
 	}
-	if home == filepath.Clean(ambient) || home == filepath.Join(userHome, ".codex") || home == cwd || strings.HasPrefix(home, cwd+string(os.PathSeparator)) {
+	// The exact current user's default path may be accepted only when the
+	// caller provides its own explicit, authenticated local launch gate.
+	explicitDefault := allowDefault && userHome != "" && home == defaultHome
+	if (!explicitDefault && (home == filepath.Clean(ambient) || home == defaultHome)) ||
+		home == cwd || strings.HasPrefix(home, cwd+string(os.PathSeparator)) {
 		return "", errors.New("-codex-home must be dedicated, outside the task worktree, and distinct from the ambient/default Codex home")
 	}
 	return home, nil
 }
 
-// A separate child receives only the operator's dedicated CODEX_HOME. It does
+// A separate child receives only the operator-selected CODEX_HOME. It does
 // not mutate this process's environment, read/copy sessions, or pass user data
 // as executable flags. Keep user/managed rules and approval controls intact.
 func runFollowUpCodexTurn(ctx context.Context, binary, cwd, home string, args []string, prompt string) (codexResult, string, error) {
@@ -354,7 +363,7 @@ func runDedicatedCodexTurn(ctx context.Context, binary, cwd, home string, args [
 	cmd.Dir, cmd.Stdin = cwd, strings.NewReader(prompt)
 	for _, entry := range os.Environ() {
 		// Do not reuse ambient Codex session/routing settings or API credentials.
-		// Dedicated-home credentials must already have been provisioned by operator.
+		// The selected home must already have usable credentials; none are copied.
 		key, _, _ := strings.Cut(entry, "=")
 		if key == "CODEX_HOME" || strings.HasPrefix(key, "CODEX_") || strings.HasPrefix(key, "OPENAI_") {
 			continue

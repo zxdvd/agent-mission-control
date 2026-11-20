@@ -138,3 +138,81 @@ func TestManagedNoSandboxRequiresExactModeAndLocalUnlockForTextOnly(t *testing.T
 		}
 	}
 }
+
+func TestManagedNoSandboxCanExplicitlyReuseAccountDefaultCodexHome(t *testing.T) {
+	canonicalTemp := func() string {
+		path, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	userHome, cwd, ambient, bin := canonicalTemp(), canonicalTemp(), canonicalTemp(), canonicalTemp()
+	home := filepath.Join(userHome, ".codex")
+	insideHome := filepath.Join(home, "nested")
+	if err := os.MkdirAll(insideHome, 0700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(userHome, "codex-alias")
+	if err := os.Symlink(home, alias); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", userHome)
+	t.Setenv("CODEX_HOME", ambient)
+	t.Setenv("PATH", bin)
+	t.Setenv("OPENAI_API_KEY", "fake-ambient")
+	t.Setenv("CODEX_WORKBENCH_TEST_IGNORED", "fake-ambient")
+	t.Setenv("WORKBENCH_TEST_WANTED_HOME", home)
+	t.Setenv("WORKBENCH_TEST_WANTED_CWD", cwd)
+
+	// This fake checks the exact child environment and writes fixture protocol
+	// JSON. It never reads config, credentials, sessions, or the real Codex CLI.
+	script := `#!/bin/sh
+[ "$CODEX_HOME" = "$WORKBENCH_TEST_WANTED_HOME" ] || exit 77
+[ "$PWD" = "$WORKBENCH_TEST_WANTED_CWD" ] || exit 78
+[ -z "$OPENAI_API_KEY" ] && [ -z "$CODEX_WORKBENCH_TEST_IGNORED" ] || exit 79
+/bin/cat <<'JSON'
+{"type":"thread.started","thread_id":"aaaaaaaa-1111-4422-8333-111111111111"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"agent_message","text":"{\"status\":\"ready\",\"summary\":\"fake\",\"question\":\"\",\"options\":[],\"evidence\":[{\"label\":\"note\",\"excerpt\":\"result\"}]}"}}
+{"type":"turn.completed"}
+JSON
+`
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, path, cwd string
+		ack, noSandbox  bool
+	}{
+		{"omitted", "", cwd, true, true},
+		{"relative", ".codex", cwd, true, true},
+		{"unvetted", home, cwd, false, true},
+		{"read-only", home, cwd, true, false},
+		{"custom ambient", ambient, cwd, true, true},
+		{"symlink", alias, cwd, true, true},
+		{"cwd contains home", home, userHome, true, true},
+		{"home contains cwd", home, insideHome, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := newManagedWorker(tc.path, tc.cwd, tc.ack, tc.noSandbox); err == nil {
+				t.Fatal("accepted a home outside the explicitly permitted combination")
+			}
+		})
+	}
+	if _, err := validateFollowUpCodexHome(home, true, cwd); err == nil {
+		t.Fatal("separate CLI worker gained access to account default")
+	}
+	worker, err := newManagedWorker(home, cwd, true, true)
+	if err != nil || worker.home != home || worker.runCode == "" {
+		t.Fatalf("could not opt into the explicitly configured account default: %v", err)
+	}
+	dedicated, err := newManagedWorker(canonicalTemp(), cwd, true, true)
+	if err != nil || dedicated.runner == worker.runner {
+		t.Fatalf("switching to default would not change native runner binding: %v", err)
+	}
+	result, id, err := worker.run(nil, store.Task{Goal: "Explicit fixture task"}, store.ManagedTurn{Kind: "start"}, "", "")
+	if err != nil || id != managedTestThread || result.Status != "ready" {
+		t.Fatalf("runtime did not validate and pass the exact configured account default to the fake child: %v", err)
+	}
+}

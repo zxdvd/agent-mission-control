@@ -49,7 +49,12 @@ func newManagedWorker(home, cwd string, ack, noSandbox bool) (*managedWorker, er
 	if err != nil || !info.IsDir() {
 		return nil, errors.New("managed Codex working directory unavailable")
 	}
-	home, err = validateFollowUpCodexHome(home, ack, dir)
+	if !ack || !filepath.IsAbs(home) {
+		return nil, errors.New("managed Codex requires an explicit absolute -managed-codex-home and -ack-vetted-runner")
+	}
+	// Only the managed mode protected by a foreground launch code can use
+	// the current account's global Codex configuration and its logged-in tools.
+	home, err = validateVettedCodexHome(home, ack, dir, noSandbox)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +144,7 @@ func (w *managedWorker) run(s *store.Store, t store.Task, turn store.ManagedTurn
 	if err != nil || cwd != w.cwd {
 		return invalid(errors.New("managed working directory changed"))
 	}
-	if _, err := validateFollowUpCodexHome(w.home, true, cwd); err != nil {
+	if _, err := validateVettedCodexHome(w.home, true, cwd, w.noSandbox); err != nil {
 		return invalid(errors.New("managed Codex home changed"))
 	}
 	if (turn.Kind == "start" && nativeID != "") || (turn.Kind == "follow_up" && !nativeThreadID.MatchString(nativeID)) {
